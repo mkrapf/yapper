@@ -12,37 +12,66 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled("── ", Theme::status_bar()),
     ];
 
-    match &app.connection_state {
-        ConnectionState::Connected(port) => {
-            spans.push(Span::styled(port.as_str(), Theme::status_port_name()));
-            spans.push(Span::styled(" @ ", Theme::status_bar()));
-            spans.push(Span::styled(
-                app.serial_config.summary(),
-                Theme::status_baud(),
-            ));
-            spans.push(Span::styled("  ▸ ", Theme::status_bar()));
-            spans.push(Span::styled("Connected", Theme::status_connected()));
-            spans.push(Span::styled(" ◂", Theme::status_bar()));
-        }
-        ConnectionState::Disconnected => {
-            spans.push(Span::styled(
-                "No port selected",
-                Theme::status_disconnected(),
-            ));
-            spans.push(Span::styled("  ▸ ", Theme::status_bar()));
-            spans.push(Span::styled("Disconnected", Theme::status_disconnected()));
-            spans.push(Span::styled(" ◂", Theme::status_bar()));
-        }
-        ConnectionState::Error(msg) => {
-            spans.push(Span::styled("Error: ", Theme::status_error()));
-            spans.push(Span::styled(
-                truncate(msg, area.width as usize - 20),
-                Theme::status_error(),
-            ));
+    // Check for temporary status message first
+    if let Some((msg, _)) = &app.status_message {
+        spans.push(Span::styled(msg.as_str(), Theme::status_baud()));
+    } else {
+        match &app.connection_state {
+            ConnectionState::Connected(port) => {
+                spans.push(Span::styled(port.as_str(), Theme::status_port_name()));
+                spans.push(Span::styled(" @ ", Theme::status_bar()));
+                spans.push(Span::styled(
+                    app.serial_config.summary(),
+                    Theme::status_baud(),
+                ));
+                spans.push(Span::styled("  ▸ ", Theme::status_bar()));
+                spans.push(Span::styled("Connected", Theme::status_connected()));
+                spans.push(Span::styled(" ◂", Theme::status_bar()));
+            }
+            ConnectionState::Disconnected => {
+                spans.push(Span::styled(
+                    "No port selected",
+                    Theme::status_disconnected(),
+                ));
+                spans.push(Span::styled("  ▸ ", Theme::status_bar()));
+                spans.push(Span::styled("Disconnected", Theme::status_disconnected()));
+                spans.push(Span::styled(" ◂", Theme::status_bar()));
+            }
+            ConnectionState::Reconnecting(port) => {
+                spans.push(Span::styled(port.as_str(), Theme::status_port_name()));
+                spans.push(Span::styled("  ▸ ", Theme::status_bar()));
+                spans.push(Span::styled("Reconnecting...", Theme::status_baud()));
+                spans.push(Span::styled(" ◂", Theme::status_bar()));
+            }
+            ConnectionState::Error(msg) => {
+                spans.push(Span::styled("Error: ", Theme::status_error()));
+                spans.push(Span::styled(
+                    truncate(msg, area.width as usize - 20),
+                    Theme::status_error(),
+                ));
+            }
         }
     }
 
-    // Scroll indicator on the right side
+    // Mode indicators on the right
+    let mut indicators = Vec::new();
+    if app.hex_mode {
+        indicators.push("HEX");
+    }
+    if app.show_line_endings {
+        indicators.push("EOL");
+    }
+    if !app.show_timestamps {
+        indicators.push("!TS");
+    }
+    if !indicators.is_empty() {
+        spans.push(Span::styled(
+            format!("  [{}]", indicators.join("|")),
+            Theme::status_baud(),
+        ));
+    }
+
+    // Scroll indicator
     if app.scroll_offset > 0 {
         let indicator = format!("  ↑{}", app.scroll_offset);
         spans.push(Span::styled(indicator, Theme::status_baud()));

@@ -16,6 +16,7 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
     match app.mode {
         Mode::Normal => handle_normal_mode(app, key),
         Mode::Input => handle_input_mode(app, key),
+        Mode::Search => handle_search_mode(app, key),
         Mode::PortSelect => handle_port_select_mode(app, key),
         Mode::Help => handle_help_mode(app, key),
     }
@@ -43,8 +44,16 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::PageDown => app.scroll_down(20),
         KeyCode::PageUp => app.scroll_up(20),
 
-        // Toggle timestamps
+        // Search
+        KeyCode::Char('/') => app.start_search(),
+        KeyCode::Char('n') => app.search_next(),
+        KeyCode::Char('N') => app.search_prev(),
+
+        // Toggles
         KeyCode::Char('t') => app.show_timestamps = !app.show_timestamps,
+        KeyCode::Char('h') => app.toggle_hex_mode(),
+        KeyCode::Char('e') => app.toggle_line_endings(),
+        KeyCode::Char('l') => app.toggle_logging(),
 
         // Port selector
         KeyCode::Char('p') => app.open_port_selector(),
@@ -79,14 +88,57 @@ fn handle_input_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Right => {
             app.input_cursor_right();
         }
-        KeyCode::Home | KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Up => {
+            app.history_previous();
+        }
+        KeyCode::Down => {
+            app.history_next();
+        }
+        KeyCode::Home => {
             app.input_cursor_home();
         }
-        KeyCode::End | KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::End => {
+            app.input_cursor_end();
+        }
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input_cursor_home();
+        }
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.input_cursor_end();
         }
         KeyCode::Char(c) => {
             app.input_char(c);
+        }
+        _ => {}
+    }
+}
+
+fn handle_search_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.end_search();
+        }
+        KeyCode::Enter => {
+            // Confirm search and return to normal mode (matches stay highlighted)
+            app.mode = Mode::Normal;
+        }
+        KeyCode::Backspace => {
+            app.search_backspace();
+        }
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.search_next();
+        }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.search_prev();
+        }
+        KeyCode::Down => {
+            app.search_next();
+        }
+        KeyCode::Up => {
+            app.search_prev();
+        }
+        KeyCode::Char(c) => {
+            app.search_char(c);
         }
         _ => {}
     }
