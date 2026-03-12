@@ -2,8 +2,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crate::buffer::ScrollbackBuffer;
+use crate::filter::LineFilter;
 use crate::history::CommandHistory;
 use crate::logging::SessionLogger;
+use crate::macros::MacroManager;
 use crate::search::Search;
 use crate::serial::config::SerialConfig;
 use crate::serial::connection::{SerialConnection, SerialEvent};
@@ -91,6 +93,12 @@ pub struct App {
     reconnect_delay: Duration,
     /// Status message (shown temporarily in status bar).
     pub status_message: Option<(String, Instant)>,
+    /// Line filter (regex-based include/exclude).
+    pub filter: LineFilter,
+    /// Macro manager.
+    pub macros: MacroManager,
+    /// Selected macro index (for macro selector popup).
+    pub macro_select_index: usize,
 }
 
 impl App {
@@ -124,6 +132,9 @@ impl App {
             last_reconnect_attempt: None,
             reconnect_delay: Duration::from_secs(1),
             status_message: None,
+            filter: LineFilter::new(),
+            macros: MacroManager::new(),
+            macro_select_index: 0,
         }
     }
 
@@ -516,5 +527,68 @@ impl App {
 
     pub fn is_connected(&self) -> bool {
         matches!(self.connection_state, ConnectionState::Connected(_))
+    }
+
+    // ── Filter ──────────────────────────────────────────
+
+    pub fn add_filter_include(&mut self, pattern: &str) {
+        match self.filter.add_include(pattern) {
+            Ok(_) => self.set_status(format!("Filter +{}", pattern)),
+            Err(e) => self.set_status(e),
+        }
+    }
+
+    pub fn add_filter_exclude(&mut self, pattern: &str) {
+        match self.filter.add_exclude(pattern) {
+            Ok(_) => self.set_status(format!("Filter -{}", pattern)),
+            Err(e) => self.set_status(e),
+        }
+    }
+
+    pub fn clear_filters(&mut self) {
+        self.filter.clear();
+        self.set_status("Filters cleared".to_string());
+    }
+
+    // ── Macros ──────────────────────────────────────────
+
+    /// Send raw text over serial (used by macros).
+    pub fn send_text(&mut self, text: &str) {
+        let line_ending = self.line_ending.clone();
+        let data = format!("{}{}", text, line_ending);
+
+        if let Some(conn) = &mut self.connection {
+            match conn.write(data.as_bytes()) {
+                Ok(_) => {
+                    self.tx_bytes = conn.tx_bytes;
+                }
+                Err(_) => {
+                    self.connection_state =
+                        ConnectionState::Error("Write failed".to_string());
+                }
+            }
+        }
+    }
+
+    /// Execute a macro by name.
+    pub fn execute_macro(&mut self, name: &str) {
+        if let Some(m) = self.macros.get(name) {
+            let commands: Vec<String> = m.commands.iter().map(|c| c.text.clone()).collect();
+            self.set_status(format!("Running macro: {}", name));
+            for cmd in commands {
+                self.send_text(&cmd);
+            }
+        } else {
+            self.set_status(format!("Macro not found: {}", name));
+        }
+    }
+
+    /// Execute the currently selected macro.
+    pub fn execute_selected_macro(&mut self) {
+        let macros = self.macros.list();
+        if let Some(m) = macros.get(self.macro_select_index) {
+            let name = m.name.clone();
+            self.execute_macro(&name);
+        }
     }
 }
