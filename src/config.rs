@@ -1,0 +1,172 @@
+use serde::{Deserialize, Serialize};
+
+/// Application configuration, loadable from TOML.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppConfig {
+    pub defaults: DefaultsConfig,
+    pub display: DisplayConfig,
+    pub behavior: BehaviorConfig,
+    pub logging: LoggingConfig,
+    pub history: HistoryConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DefaultsConfig {
+    pub baud_rate: u32,
+    pub data_bits: u8,
+    pub parity: String,
+    pub stop_bits: u8,
+    pub flow_control: String,
+    pub line_ending: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DisplayConfig {
+    pub timestamps: bool,
+    pub timestamp_format: String,
+    pub color_log_levels: bool,
+    pub show_line_endings: bool,
+    pub hex_mode: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BehaviorConfig {
+    pub auto_reconnect: bool,
+    pub reconnect_delay_ms: u64,
+    pub scrollback_lines: usize,
+    pub follow_output: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoggingConfig {
+    pub auto_log: bool,
+    pub log_directory: String,
+    pub log_format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistoryConfig {
+    pub max_entries: usize,
+    pub file: String,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            defaults: DefaultsConfig::default(),
+            display: DisplayConfig::default(),
+            behavior: BehaviorConfig::default(),
+            logging: LoggingConfig::default(),
+            history: HistoryConfig::default(),
+        }
+    }
+}
+
+impl Default for DefaultsConfig {
+    fn default() -> Self {
+        Self {
+            baud_rate: 115200,
+            data_bits: 8,
+            parity: "none".to_string(),
+            stop_bits: 1,
+            flow_control: "none".to_string(),
+            line_ending: "crlf".to_string(),
+        }
+    }
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            timestamps: true,
+            timestamp_format: "%H:%M:%S%.3f".to_string(),
+            color_log_levels: true,
+            show_line_endings: false,
+            hex_mode: false,
+        }
+    }
+}
+
+impl Default for BehaviorConfig {
+    fn default() -> Self {
+        Self {
+            auto_reconnect: true,
+            reconnect_delay_ms: 1000,
+            scrollback_lines: 10000,
+            follow_output: true,
+        }
+    }
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            auto_log: false,
+            log_directory: "~/.local/share/yap/logs".to_string(),
+            log_format: "raw".to_string(),
+        }
+    }
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            max_entries: 500,
+            file: "~/.local/share/yap/history".to_string(),
+        }
+    }
+}
+
+impl AppConfig {
+    /// Load config from the default XDG path, falling back to defaults.
+    pub fn load() -> Self {
+        if let Some(config_dir) = dirs::config_dir() {
+            let config_path = config_dir.join("yap").join("config.toml");
+            if config_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&config_path) {
+                    if let Ok(config) = toml::from_str(&content) {
+                        return config;
+                    }
+                }
+            }
+        }
+        Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = AppConfig::default();
+        assert_eq!(config.defaults.baud_rate, 115200);
+        assert_eq!(config.defaults.data_bits, 8);
+        assert_eq!(config.behavior.scrollback_lines, 10000);
+        assert!(config.display.timestamps);
+        assert!(!config.display.hex_mode);
+    }
+
+    #[test]
+    fn test_deserialize_partial_config() {
+        let toml_str = r#"
+            [defaults]
+            baud_rate = 9600
+
+            [display]
+            timestamps = false
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.defaults.baud_rate, 9600);
+        assert!(!config.display.timestamps);
+        // Defaults should be preserved for unset fields
+        assert_eq!(config.behavior.scrollback_lines, 10000);
+    }
+}
