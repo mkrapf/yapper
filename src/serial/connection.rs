@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -19,22 +19,24 @@ pub enum SerialEvent {
 
 /// Manages the serial port connection and reader thread.
 pub struct SerialConnection {
-    /// The serial port handle (used for writing TX data).
-    port: Box<dyn serialport::SerialPort>,
-    /// Flag to signal the reader thread to stop.
+    /// Channel to send write requests to the writer thread (non-blocking).
+    write_tx: Option<Sender<Vec<u8>>>,
+    /// Flag to signal threads to stop.
     stop_flag: Arc<AtomicBool>,
     /// Handle to the reader thread.
     reader_handle: Option<thread::JoinHandle<()>>,
+    /// Handle to the writer thread.
+    writer_handle: Option<thread::JoinHandle<()>>,
     /// The port name (e.g. "/dev/ttyUSB0").
     port_name: String,
+    /// Total bytes sent (updated via shared counter).
+    tx_count: Arc<std::sync::atomic::AtomicU64>,
     /// Total bytes received.
     pub rx_bytes: u64,
-    /// Total bytes sent.
-    pub tx_bytes: u64,
 }
 
 impl SerialConnection {
-    /// Open a serial port and start the reader thread.
+    /// Open a serial port and start the reader + writer threads.
     pub fn open(
         port_name: &str,
         config: &SerialConfig,
@@ -50,8 +52,9 @@ impl SerialConnection {
             .with_context(|| format!("Failed to open serial port: {}", port_name))?;
 
         let stop_flag = Arc::new(AtomicBool::new(false));
+        let tx_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-        // Clone what the reader thread needs
+        // Clone port for reader thread
         let reader_port = port.try_clone()
             .context("Failed to clone serial port for reader thread")?;
         let reader_stop = stop_flag.clone();
@@ -63,13 +66,26 @@ impl SerialConnection {
             })
             .context("Failed to spawn serial reader thread")?;
 
+        // Writer thread: receives data via channel and writes to port
+        let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
+        let writer_stop = stop_flag.clone();
+        let writer_tx_count = tx_count.clone();
+        // port is moved into the writer thread — it owns the write handle
+        let writer_handle = thread::Builder::new()
+            .name(format!("serial-writer-{}", port_name))
+            .spawn(move || {
+                Self::writer_loop(port, write_rx, writer_stop, writer_tx_count);
+            })
+            .context("Failed to spawn serial writer thread")?;
+
         Ok(Self {
-            port,
+            write_tx: Some(write_tx),
             stop_flag,
             reader_handle: Some(reader_handle),
+            writer_handle: Some(writer_handle),
             port_name: port_name.to_string(),
+            tx_count,
             rx_bytes: 0,
-            tx_bytes: 0,
         })
     }
 
@@ -110,14 +126,45 @@ impl SerialConnection {
         }
     }
 
-    /// Write data to the serial port (TX).
-    pub fn write(&mut self, data: &[u8]) -> Result<usize> {
+    /// The writer thread loop: receives data from the channel and writes to the port.
+    fn writer_loop(
+        mut port: Box<dyn serialport::SerialPort>,
+        rx: mpsc::Receiver<Vec<u8>>,
+        stop: Arc<AtomicBool>,
+        tx_count: Arc<std::sync::atomic::AtomicU64>,
+    ) {
         use std::io::Write;
-        let n = self.port.write(data)
-            .context("Failed to write to serial port")?;
-        self.port.flush().ok();
-        self.tx_bytes += n as u64;
-        Ok(n)
+
+        while !stop.load(Ordering::Relaxed) {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(data) => {
+                    match port.write_all(&data) {
+                        Ok(_) => {
+                            let _ = port.flush();
+                            tx_count.fetch_add(data.len() as u64, Ordering::Relaxed);
+                        }
+                        Err(_) => break,
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    }
+
+    /// Send data to the serial port (non-blocking — queued to writer thread).
+    pub fn write(&self, data: &[u8]) -> Result<usize> {
+        let len = data.len();
+        if let Some(tx) = &self.write_tx {
+            tx.send(data.to_vec())
+                .map_err(|_| anyhow::anyhow!("Writer thread disconnected"))?;
+        }
+        Ok(len)
+    }
+
+    /// Get total TX bytes.
+    pub fn tx_bytes(&self) -> u64 {
+        self.tx_count.load(Ordering::Relaxed)
     }
 
     /// Get the port name.
@@ -125,10 +172,14 @@ impl SerialConnection {
         &self.port_name
     }
 
-    /// Close the connection and stop the reader thread.
+    /// Close the connection and stop all threads.
     pub fn close(mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
+        self.write_tx.take(); // Drop sender to signal writer thread
         if let Some(handle) = self.reader_handle.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.writer_handle.take() {
             let _ = handle.join();
         }
     }
@@ -137,7 +188,5 @@ impl SerialConnection {
 impl Drop for SerialConnection {
     fn drop(&mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
-        // We can't join here because we'd need to take the handle,
-        // but the thread will stop on its own when it sees the flag.
     }
 }

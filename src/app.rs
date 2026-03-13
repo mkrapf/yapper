@@ -176,7 +176,7 @@ impl App {
     fn disconnect_internal(&mut self, keep_reconnect: bool) {
         if let Some(conn) = self.connection.take() {
             self.rx_bytes += conn.rx_bytes;
-            self.tx_bytes += conn.tx_bytes;
+            self.tx_bytes += conn.tx_bytes();
             conn.close();
         }
         self.serial_rx = None;
@@ -225,10 +225,10 @@ impl App {
         let echo = format!("> {}\n", text);
         self.buffer.push_bytes(echo.as_bytes());
 
-        if let Some(conn) = &mut self.connection {
+        if let Some(conn) = &self.connection {
             match conn.write(data.as_bytes()) {
                 Ok(_) => {
-                    self.tx_bytes = conn.tx_bytes;
+                    self.tx_bytes = conn.tx_bytes();
                 }
                 Err(_) => {
                     self.connection_state =
@@ -586,10 +586,10 @@ impl App {
         let line_ending = self.line_ending.clone();
         let data = format!("{}{}", text, line_ending);
 
-        if let Some(conn) = &mut self.connection {
+        if let Some(conn) = &self.connection {
             match conn.write(data.as_bytes()) {
                 Ok(_) => {
-                    self.tx_bytes = conn.tx_bytes;
+                    self.tx_bytes = conn.tx_bytes();
                 }
                 Err(_) => {
                     self.connection_state =
