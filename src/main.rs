@@ -10,6 +10,7 @@ mod history;
 mod input;
 mod logging;
 mod macros;
+mod mouse;
 mod search;
 mod serial;
 mod theme;
@@ -69,7 +70,12 @@ fn main() -> Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::with_options(
+        backend,
+        ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Fullscreen,
+        },
+    )?;
 
     // Create app
     let serial_config = serial::config::SerialConfig {

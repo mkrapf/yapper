@@ -6,6 +6,7 @@ use crate::filter::LineFilter;
 use crate::history::CommandHistory;
 use crate::logging::SessionLogger;
 use crate::macros::MacroManager;
+use crate::mouse::{LayoutRegions, TextSelection};
 use crate::search::Search;
 use crate::serial::config::SerialConfig;
 use crate::serial::connection::{SerialConnection, SerialEvent};
@@ -22,6 +23,8 @@ pub enum Mode {
     Search,
     /// Port selector popup is open.
     PortSelect,
+    /// UART settings popup is open.
+    Settings,
     /// Help overlay is shown.
     Help,
 }
@@ -99,6 +102,12 @@ pub struct App {
     pub macros: MacroManager,
     /// Selected macro index (for macro selector popup).
     pub macro_select_index: usize,
+    /// Currently selected field in settings popup (0-4).
+    pub settings_field: usize,
+    /// Layout regions for mouse click detection.
+    pub layout: LayoutRegions,
+    /// Text selection state for click-drag-copy.
+    pub selection: TextSelection,
 }
 
 impl App {
@@ -135,6 +144,9 @@ impl App {
             filter: LineFilter::new(),
             macros: MacroManager::new(),
             macro_select_index: 0,
+            settings_field: 0,
+            layout: LayoutRegions::default(),
+            selection: TextSelection::new(),
         }
     }
 
@@ -209,6 +221,10 @@ impl App {
         let line_ending = self.line_ending.clone();
         let data = format!("{}{}", text, line_ending);
 
+        // Echo command to scrollback buffer
+        let echo = format!("> {}\n", text);
+        self.buffer.push_bytes(echo.as_bytes());
+
         if let Some(conn) = &mut self.connection {
             match conn.write(data.as_bytes()) {
                 Ok(_) => {
@@ -229,14 +245,24 @@ impl App {
         self.input_cursor = 0;
     }
 
-    /// Poll for serial events. Called every tick from the event loop.
-    pub fn poll_serial(&mut self) {
+    /// Poll for serial events. Returns true if anything happened (needs re-render).
+    pub fn poll_serial(&mut self) -> bool {
+        let mut changed = false;
+
+        // Clear expired status messages
+        if let Some((_, time)) = &self.status_message {
+            if time.elapsed() > Duration::from_secs(3) {
+                self.status_message = None;
+                changed = true;
+            }
+        }
+
         let rx = match &self.serial_rx {
             Some(rx) => rx,
             None => {
                 // Try auto-reconnect if needed
                 self.try_reconnect();
-                return;
+                return changed;
             }
         };
 
@@ -245,12 +271,12 @@ impl App {
             match rx.try_recv() {
                 Ok(SerialEvent::Data(data)) => {
                     self.rx_bytes += data.len() as u64;
-                    // Log if active
                     self.logger.log_bytes(&data);
                     self.buffer.push_bytes(&data);
                     if self.follow_output {
                         self.scroll_offset = 0;
                     }
+                    changed = true;
                 }
                 Ok(SerialEvent::Disconnected) => {
                     let port = match &self.connection_state {
@@ -301,12 +327,7 @@ impl App {
             }
         }
 
-        // Clear expired status messages
-        if let Some((_, time)) = &self.status_message {
-            if time.elapsed() > Duration::from_secs(3) {
-                self.status_message = None;
-            }
-        }
+        changed
     }
 
     /// Attempt auto-reconnect if conditions are met.
@@ -517,6 +538,10 @@ impl App {
         self.status_message = Some((msg, Instant::now()));
     }
 
+    pub fn set_status_pub(&mut self, msg: String) {
+        self.set_status(msg);
+    }
+
     pub fn total_rx_bytes(&self) -> u64 {
         self.rx_bytes
     }
@@ -527,6 +552,10 @@ impl App {
 
     pub fn is_connected(&self) -> bool {
         matches!(self.connection_state, ConnectionState::Connected(_))
+    }
+
+    pub fn is_reconnecting(&self) -> bool {
+        matches!(self.connection_state, ConnectionState::Reconnecting(_))
     }
 
     // ── Filter ──────────────────────────────────────────
@@ -589,6 +618,118 @@ impl App {
         if let Some(m) = macros.get(self.macro_select_index) {
             let name = m.name.clone();
             self.execute_macro(&name);
+        }
+    }
+
+    // ── Settings ────────────────────────────────────────
+
+    pub fn open_settings(&mut self) {
+        self.settings_field = 0;
+        self.mode = Mode::Settings;
+    }
+
+    /// Cycle the selected settings field value forward.
+    pub fn settings_next_value(&mut self) {
+        use serialport::*;
+        match self.settings_field {
+            0 => {
+                // Baud rate: cycle through common rates
+                let rates = crate::ui::settings::BAUD_RATES;
+                let current_idx = rates.iter().position(|&r| r == self.serial_config.baud_rate);
+                let next_idx = match current_idx {
+                    Some(i) => (i + 1) % rates.len(),
+                    None => 0,
+                };
+                self.serial_config.baud_rate = rates[next_idx];
+            }
+            1 => {
+                self.serial_config.data_bits = match self.serial_config.data_bits {
+                    DataBits::Five => DataBits::Six,
+                    DataBits::Six => DataBits::Seven,
+                    DataBits::Seven => DataBits::Eight,
+                    DataBits::Eight => DataBits::Five,
+                };
+            }
+            2 => {
+                self.serial_config.parity = match self.serial_config.parity {
+                    Parity::None => Parity::Odd,
+                    Parity::Odd => Parity::Even,
+                    Parity::Even => Parity::None,
+                };
+            }
+            3 => {
+                self.serial_config.stop_bits = match self.serial_config.stop_bits {
+                    StopBits::One => StopBits::Two,
+                    StopBits::Two => StopBits::One,
+                };
+            }
+            4 => {
+                self.serial_config.flow_control = match self.serial_config.flow_control {
+                    FlowControl::None => FlowControl::Software,
+                    FlowControl::Software => FlowControl::Hardware,
+                    FlowControl::Hardware => FlowControl::None,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// Cycle the selected settings field value backward.
+    pub fn settings_prev_value(&mut self) {
+        use serialport::*;
+        match self.settings_field {
+            0 => {
+                let rates = crate::ui::settings::BAUD_RATES;
+                let current_idx = rates.iter().position(|&r| r == self.serial_config.baud_rate);
+                let next_idx = match current_idx {
+                    Some(0) | None => rates.len() - 1,
+                    Some(i) => i - 1,
+                };
+                self.serial_config.baud_rate = rates[next_idx];
+            }
+            1 => {
+                self.serial_config.data_bits = match self.serial_config.data_bits {
+                    DataBits::Five => DataBits::Eight,
+                    DataBits::Six => DataBits::Five,
+                    DataBits::Seven => DataBits::Six,
+                    DataBits::Eight => DataBits::Seven,
+                };
+            }
+            2 => {
+                self.serial_config.parity = match self.serial_config.parity {
+                    Parity::None => Parity::Even,
+                    Parity::Odd => Parity::None,
+                    Parity::Even => Parity::Odd,
+                };
+            }
+            3 => {
+                self.serial_config.stop_bits = match self.serial_config.stop_bits {
+                    StopBits::One => StopBits::Two,
+                    StopBits::Two => StopBits::One,
+                };
+            }
+            4 => {
+                self.serial_config.flow_control = match self.serial_config.flow_control {
+                    FlowControl::None => FlowControl::Hardware,
+                    FlowControl::Software => FlowControl::None,
+                    FlowControl::Hardware => FlowControl::Software,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// Apply settings changes: reconnect if currently connected.
+    pub fn apply_settings(&mut self) {
+        self.mode = Mode::Normal;
+        let summary = self.serial_config.summary();
+        self.set_status(format!("Settings: {}", summary));
+
+        // If connected, reconnect with new settings
+        if let ConnectionState::Connected(port) = &self.connection_state {
+            let port = port.clone();
+            self.disconnect();
+            self.connect(&port);
         }
     }
 }

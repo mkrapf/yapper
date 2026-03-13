@@ -1,6 +1,7 @@
 mod help;
 mod input_bar;
 mod port_selector;
+pub mod settings;
 mod status_bar;
 mod terminal_view;
 
@@ -11,7 +12,7 @@ use crate::app::{App, Mode};
 use crate::theme::Theme;
 
 /// Render the entire application UI.
-pub fn render(app: &App, frame: &mut Frame) {
+pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
 
     // Layout depends on whether search bar is visible
@@ -40,12 +41,28 @@ pub fn render(app: &App, frame: &mut Frame) {
         .split(area);
 
     if has_search {
+        // Record layout regions for mouse click detection
+        let r = chunks[0];
+        app.layout.status_bar = (r.x, r.y, r.width, r.height);
+        let r = chunks[1];
+        app.layout.terminal_view = (r.x, r.y, r.width, r.height);
+        let r = chunks[3];
+        app.layout.input_bar = (r.x, r.y, r.width, r.height);
+
         status_bar::render(app, frame, chunks[0]);
         terminal_view::render(app, frame, chunks[1]);
         render_search_bar(app, frame, chunks[2]);
         input_bar::render(app, frame, chunks[3]);
         render_help_hints(app, frame, chunks[4]);
     } else {
+        // Record layout regions for mouse click detection
+        let r = chunks[0];
+        app.layout.status_bar = (r.x, r.y, r.width, r.height);
+        let r = chunks[1];
+        app.layout.terminal_view = (r.x, r.y, r.width, r.height);
+        let r = chunks[2];
+        app.layout.input_bar = (r.x, r.y, r.width, r.height);
+
         status_bar::render(app, frame, chunks[0]);
         terminal_view::render(app, frame, chunks[1]);
         input_bar::render(app, frame, chunks[2]);
@@ -56,6 +73,9 @@ pub fn render(app: &App, frame: &mut Frame) {
     match app.mode {
         Mode::PortSelect => {
             port_selector::render(app, frame, area);
+        }
+        Mode::Settings => {
+            settings::render(app, frame, area);
         }
         Mode::Help => {
             help::render(app, frame, area);
@@ -109,6 +129,8 @@ fn render_help_hints(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled(": hex  ", Theme::help_bar()),
             Span::styled("p", Theme::help_key()),
             Span::styled(": ports  ", Theme::help_bar()),
+            Span::styled("s", Theme::help_key()),
+            Span::styled(": settings  ", Theme::help_bar()),
             Span::styled("l", Theme::help_key()),
             Span::styled(": log  ", Theme::help_bar()),
             Span::styled("?", Theme::help_key()),
@@ -139,6 +161,16 @@ fn render_help_hints(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled(": refresh  ", Theme::help_bar()),
             Span::styled("Esc", Theme::help_key()),
             Span::styled(": close", Theme::help_bar()),
+        ],
+        Mode::Settings => vec![
+            Span::styled("↑/↓", Theme::help_key()),
+            Span::styled(": select  ", Theme::help_bar()),
+            Span::styled("←/→", Theme::help_key()),
+            Span::styled(": change  ", Theme::help_bar()),
+            Span::styled("Enter", Theme::help_key()),
+            Span::styled(": apply  ", Theme::help_bar()),
+            Span::styled("Esc", Theme::help_key()),
+            Span::styled(": cancel", Theme::help_bar()),
         ],
         Mode::Help => vec![
             Span::styled("Esc", Theme::help_key()),

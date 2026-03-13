@@ -18,6 +18,7 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
         Mode::Input => handle_input_mode(app, key),
         Mode::Search => handle_search_mode(app, key),
         Mode::PortSelect => handle_port_select_mode(app, key),
+        Mode::Settings => handle_settings_mode(app, key),
         Mode::Help => handle_help_mode(app, key),
     }
 }
@@ -57,6 +58,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 
         // Port selector
         KeyCode::Char('p') => app.open_port_selector(),
+
+        // UART settings
+        KeyCode::Char('s') => app.open_settings(),
 
         // Connect/disconnect
         KeyCode::Char('c') => app.toggle_connection(),
@@ -175,6 +179,34 @@ fn handle_help_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
             app.mode = Mode::Normal;
+        }
+        _ => {}
+    }
+}
+
+fn handle_settings_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = Mode::Normal;
+        }
+        KeyCode::Enter => {
+            app.apply_settings();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.settings_field > 0 {
+                app.settings_field -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.settings_field < 4 {
+                app.settings_field += 1;
+            }
+        }
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => {
+            app.settings_next_value();
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            app.settings_prev_value();
         }
         _ => {}
     }

@@ -115,6 +115,11 @@ impl Search {
         self.matches.contains(&line_index)
     }
 
+    /// Get all matching line indices (cloned to avoid lifetime issues).
+    pub fn match_lines(&self) -> Vec<usize> {
+        self.matches.clone()
+    }
+
     /// Get a display string for match count.
     pub fn match_status(&self) -> String {
         if self.query.is_empty() {

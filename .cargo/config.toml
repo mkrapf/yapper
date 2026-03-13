@@ -1,0 +1,7 @@
+# Disable incremental compilation — required when building with cargo.exe
+# from WSL, since Windows can't create lock files on the Linux (9P) filesystem.
+[profile.dev]
+incremental = false
+
+[profile.test]
+incremental = false
