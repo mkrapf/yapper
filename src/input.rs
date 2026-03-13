@@ -13,6 +13,17 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // F-key quick-send (works in Normal and Input modes)
+    if matches!(app.mode, Mode::Normal | Mode::Input) {
+        match key.code {
+            KeyCode::F(n) if n >= 1 && n <= 8 => {
+                app.send_quicksend((n - 1) as usize);
+                return;
+            }
+            _ => {}
+        }
+    }
+
     match app.mode {
         Mode::Normal => handle_normal_mode(app, key),
         Mode::Input => handle_input_mode(app, key),
@@ -55,6 +66,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('h') => app.toggle_hex_mode(),
         KeyCode::Char('e') => app.toggle_line_endings(),
         KeyCode::Char('l') => app.toggle_logging(),
+        KeyCode::Char('x') => app.show_sent = !app.show_sent,
 
         // Port selector
         KeyCode::Char('p') => app.open_port_selector(),
@@ -68,6 +80,11 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Help
         KeyCode::Char('?') => app.mode = Mode::Help,
 
+        // Any other printable char: auto-enter input mode and insert
+        KeyCode::Char(c) => {
+            app.mode = Mode::Input;
+            app.input_char(c);
+        }
         _ => {}
     }
 }
@@ -90,7 +107,18 @@ fn handle_input_mode(app: &mut App, key: KeyEvent) {
             app.input_cursor_left();
         }
         KeyCode::Right => {
-            app.input_cursor_right();
+            // If cursor is at end and ghost suggestion exists, accept it
+            if app.input_cursor == app.input_text.len() && app.ghost_suggestion.is_some() {
+                app.accept_suggestion();
+            } else {
+                app.input_cursor_right();
+            }
+        }
+        KeyCode::Tab => {
+            // Accept ghost suggestion
+            if app.ghost_suggestion.is_some() {
+                app.accept_suggestion();
+            }
         }
         KeyCode::Up => {
             app.history_previous();
@@ -103,6 +131,19 @@ fn handle_input_mode(app: &mut App, key: KeyEvent) {
         }
         KeyCode::End => {
             app.input_cursor_end();
+        }
+        // Scroll without leaving input mode
+        KeyCode::PageUp => app.scroll_up(20),
+        KeyCode::PageDown => app.scroll_down(20),
+        // Quick access keybinds (stay in input mode after closing popup)
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.open_port_selector();
+        }
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.open_settings();
+        }
+        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.toggle_logging();
         }
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.input_cursor_home();
@@ -123,8 +164,8 @@ fn handle_search_mode(app: &mut App, key: KeyEvent) {
             app.end_search();
         }
         KeyCode::Enter => {
-            // Confirm search and return to normal mode (matches stay highlighted)
-            app.mode = Mode::Normal;
+            // Confirm search and return to input mode (matches stay highlighted)
+            app.mode = Mode::Input;
         }
         KeyCode::Backspace => {
             app.search_backspace();
@@ -151,7 +192,7 @@ fn handle_search_mode(app: &mut App, key: KeyEvent) {
 fn handle_port_select_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => {
-            app.mode = Mode::Normal;
+            app.mode = Mode::Input;
         }
         KeyCode::Enter => {
             app.connect_selected_port();
@@ -178,7 +219,7 @@ fn handle_port_select_mode(app: &mut App, key: KeyEvent) {
 fn handle_help_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
-            app.mode = Mode::Normal;
+            app.mode = Mode::Input;
         }
         _ => {}
     }
@@ -187,7 +228,7 @@ fn handle_help_mode(app: &mut App, key: KeyEvent) {
 fn handle_settings_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => {
-            app.mode = Mode::Normal;
+            app.mode = Mode::Input;
         }
         KeyCode::Enter => {
             app.apply_settings();

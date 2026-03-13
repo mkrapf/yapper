@@ -3,14 +3,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::config::SerialConfig;
 
 /// Messages sent from the serial reader thread to the main thread.
 pub enum SerialEvent {
-    /// Raw bytes received from the serial port.
-    Data(Vec<u8>),
+    /// Raw bytes received from the serial port, with the instant they were read.
+    Data(Vec<u8>, Instant),
     /// The serial port encountered an error.
     Error(String),
     /// The serial port was disconnected.
@@ -104,7 +104,7 @@ impl SerialConnection {
 
             match port.read(&mut buf) {
                 Ok(n) if n > 0 => {
-                    if tx.send(SerialEvent::Data(buf[..n].to_vec())).is_err() {
+                    if tx.send(SerialEvent::Data(buf[..n].to_vec(), Instant::now())).is_err() {
                         break; // Main thread dropped the receiver
                     }
                 }

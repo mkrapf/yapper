@@ -21,10 +21,20 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Theme::input_prompt_inactive()
     };
 
-    let spans = vec![
+    let mut spans = vec![
         Span::styled(" ❯ ", prompt_style),
         Span::styled(&app.input_text, bg_style),
     ];
+
+    // Show ghost suggestion suffix in dim text
+    if is_active {
+        if let Some(suggestion) = &app.ghost_suggestion {
+            if suggestion.len() > app.input_text.len() {
+                let suffix = &suggestion[app.input_text.len()..];
+                spans.push(Span::styled(suffix, Theme::timestamp()));
+            }
+        }
+    }
 
     let line = Line::from(spans);
     let paragraph = Paragraph::new(line).style(bg_style);

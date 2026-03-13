@@ -6,6 +6,7 @@ mod config;
 mod event;
 mod filter;
 mod hex;
+mod highlight;
 mod history;
 mod input;
 mod logging;
@@ -60,10 +61,15 @@ struct Cli {
     /// Line ending to send (lf, crlf, cr)
     #[arg(long, default_value = "crlf")]
     line_ending: String,
+
+    /// Skip auto-connecting to the last used port
+    #[arg(long)]
+    no_auto: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let app_config = config::AppConfig::load();
 
     // Setup terminal
     enable_raw_mode()?;
@@ -92,11 +98,15 @@ fn main() -> Result<()> {
         _ => "\r\n",
     };
 
-    let mut app = App::new(serial_config, line_ending.to_string());
+    let mut app = App::new(serial_config, line_ending.to_string(), app_config.clone());
 
-    // If a port was specified, connect immediately
+    // Connect: CLI port takes priority, then auto-connect to last port
     if let Some(port) = cli.port {
         app.connect(&port);
+    } else if !cli.no_auto && app_config.connection.auto_connect {
+        if let Some(last_port) = &app_config.connection.last_port {
+            app.connect(last_port);
+        }
     }
 
     // Run event loop

@@ -27,6 +27,16 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
                 spans.push(Span::styled("  ▸ ", Theme::status_bar()));
                 spans.push(Span::styled("Connected", Theme::status_connected()));
                 spans.push(Span::styled(" ◂", Theme::status_bar()));
+                // Show last response time
+                if let Some(rt) = app.last_response_time {
+                    let ms = rt.as_millis();
+                    let timing = if ms < 1000 {
+                        format!("  ↵ {}ms", ms)
+                    } else {
+                        format!("  ↵ {:.1}s", rt.as_secs_f64())
+                    };
+                    spans.push(Span::styled(timing, Theme::status_baud()));
+                }
             }
             ConnectionState::Disconnected => {
                 spans.push(Span::styled(

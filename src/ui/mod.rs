@@ -4,6 +4,7 @@ mod port_selector;
 pub mod settings;
 mod status_bar;
 mod terminal_view;
+mod quicksend_bar;
 
 use ratatui::prelude::*;
 use ratatui::text::{Line, Span};
@@ -15,59 +16,62 @@ use crate::theme::Theme;
 pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
 
-    // Layout depends on whether search bar is visible
+    // Layout depends on whether search bar and quicksend bar are visible
     let has_search = app.mode == Mode::Search || !app.search.query.is_empty();
+    let has_quicksend = !app.quicksend.is_empty();
 
-    let constraints = if has_search {
-        vec![
-            Constraint::Length(1), // Status bar
-            Constraint::Min(3),   // Terminal view
-            Constraint::Length(1), // Search bar
-            Constraint::Length(1), // Input bar
-            Constraint::Length(1), // Help hints
-        ]
-    } else {
-        vec![
-            Constraint::Length(1), // Status bar
-            Constraint::Min(3),   // Terminal view
-            Constraint::Length(1), // Input bar
-            Constraint::Length(1), // Help hints
-        ]
-    };
+    let mut constraints = vec![
+        Constraint::Length(1), // Status bar
+    ];
+    constraints.push(Constraint::Min(3)); // Terminal view
+    if has_quicksend {
+        constraints.push(Constraint::Length(1)); // Quick-send bar
+    }
+    if has_search {
+        constraints.push(Constraint::Length(1)); // Search bar
+    }
+    constraints.push(Constraint::Length(1)); // Input bar
+    constraints.push(Constraint::Length(1)); // Help hints
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
 
-    if has_search {
-        // Record layout regions for mouse click detection
-        let r = chunks[0];
-        app.layout.status_bar = (r.x, r.y, r.width, r.height);
-        let r = chunks[1];
-        app.layout.terminal_view = (r.x, r.y, r.width, r.height);
-        let r = chunks[3];
-        app.layout.input_bar = (r.x, r.y, r.width, r.height);
+    let mut idx = 0;
 
-        status_bar::render(app, frame, chunks[0]);
-        terminal_view::render(app, frame, chunks[1]);
-        render_search_bar(app, frame, chunks[2]);
-        input_bar::render(app, frame, chunks[3]);
-        render_help_hints(app, frame, chunks[4]);
-    } else {
-        // Record layout regions for mouse click detection
-        let r = chunks[0];
-        app.layout.status_bar = (r.x, r.y, r.width, r.height);
-        let r = chunks[1];
-        app.layout.terminal_view = (r.x, r.y, r.width, r.height);
-        let r = chunks[2];
-        app.layout.input_bar = (r.x, r.y, r.width, r.height);
+    // Status bar
+    let r = chunks[idx];
+    app.layout.status_bar = (r.x, r.y, r.width, r.height);
+    status_bar::render(app, frame, chunks[idx]);
+    idx += 1;
 
-        status_bar::render(app, frame, chunks[0]);
-        terminal_view::render(app, frame, chunks[1]);
-        input_bar::render(app, frame, chunks[2]);
-        render_help_hints(app, frame, chunks[3]);
+    // Terminal view
+    let r = chunks[idx];
+    app.layout.terminal_view = (r.x, r.y, r.width, r.height);
+    terminal_view::render(app, frame, chunks[idx]);
+    idx += 1;
+
+    // Quick-send bar
+    if has_quicksend {
+        quicksend_bar::render(app, frame, chunks[idx]);
+        idx += 1;
     }
+
+    // Search bar
+    if has_search {
+        render_search_bar(app, frame, chunks[idx]);
+        idx += 1;
+    }
+
+    // Input bar
+    let r = chunks[idx];
+    app.layout.input_bar = (r.x, r.y, r.width, r.height);
+    input_bar::render(app, frame, chunks[idx]);
+    idx += 1;
+
+    // Help hints
+    render_help_hints(app, frame, chunks[idx]);
 
     // Overlays
     match app.mode {
@@ -141,8 +145,14 @@ fn render_help_hints(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled(": send  ", Theme::help_bar()),
             Span::styled("↑/↓", Theme::help_key()),
             Span::styled(": history  ", Theme::help_bar()),
+            Span::styled("PgUp/Dn", Theme::help_key()),
+            Span::styled(": scroll  ", Theme::help_bar()),
+            Span::styled("^P", Theme::help_key()),
+            Span::styled(": ports  ", Theme::help_bar()),
+            Span::styled("^S", Theme::help_key()),
+            Span::styled(": settings  ", Theme::help_bar()),
             Span::styled("Esc", Theme::help_key()),
-            Span::styled(": normal", Theme::help_bar()),
+            Span::styled(": browse", Theme::help_bar()),
         ],
         Mode::Search => vec![
             Span::styled("Enter", Theme::help_key()),

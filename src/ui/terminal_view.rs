@@ -64,6 +64,7 @@ fn render_text_view(app: &App, frame: &mut Frame, area: Rect) {
                         show_le,
                         search_current,
                         &search_matches,
+                        entry.is_sent,
                     );
                     apply_selection(base, screen_row, area.x, sel_range)
                 } else {
@@ -249,6 +250,7 @@ fn build_line(
     show_line_endings: bool,
     search_current: Option<usize>,
     search_matches: &[usize],
+    is_sent: bool,
 ) -> Line<'static> {
     let mut spans = Vec::new();
 
@@ -257,6 +259,16 @@ fn build_line(
         spans.push(Span::styled(format!(" [{}] ", ts), Theme::timestamp()));
     } else {
         spans.push(Span::raw(" "));
+    }
+
+    // Sent message prefix
+    if is_sent {
+        spans.push(Span::styled(
+            "❯ ",
+            Style::default()
+                .fg(Color::Rgb(139, 233, 253)) // cyan
+                .add_modifier(Modifier::BOLD),
+        ));
     }
 
     let is_current = search_current == Some(line_index);
@@ -278,9 +290,41 @@ fn build_line(
                 .fg(Color::Rgb(248, 248, 242))
                 .bg(Color::Rgb(60, 63, 80)),
         ));
+    } else if is_sent {
+        // Sent messages: use a distinct style (slightly dimmed cyan)
+        spans.push(Span::styled(
+            owned_text,
+            Style::default().fg(Color::Rgb(139, 233, 253)),
+        ));
     } else {
-        let style = Theme::style_for_line(text);
-        spans.push(Span::styled(owned_text, style));
+        // Apply syntax highlighting
+        let highlights = crate::highlight::highlight_line(text);
+        if highlights.is_empty() {
+            let style = Theme::style_for_line(text);
+            spans.push(Span::styled(owned_text, style));
+        } else {
+            let base_style = Theme::style_for_line(text);
+            let mut pos = 0;
+            for (range, hl_style) in &highlights {
+                if range.start > pos {
+                    spans.push(Span::styled(
+                        text[pos..range.start].to_string(),
+                        base_style,
+                    ));
+                }
+                spans.push(Span::styled(
+                    text[range.start..range.end].to_string(),
+                    *hl_style,
+                ));
+                pos = range.end;
+            }
+            if pos < text.len() {
+                spans.push(Span::styled(
+                    text[pos..].to_string(),
+                    base_style,
+                ));
+            }
+        }
     }
 
     if show_line_endings && *line_ending != LineEnding::None {

@@ -148,8 +148,39 @@ impl CommandHistory {
         }
     }
 
+    /// Suggest a completion from history matching the given prefix.
+    /// Returns the full matching entry (most recent match) if any.
+    pub fn suggest(&self, prefix: &str) -> Option<&str> {
+        if prefix.is_empty() {
+            return None;
+        }
+        let prefix_lower = prefix.to_lowercase();
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| e.to_lowercase().starts_with(&prefix_lower) && e.len() > prefix.len())
+            .map(|s| s.as_str())
+    }
+
+    /// Get all entries for frequency analysis.
+    pub fn entries(&self) -> &[String] {
+        &self.entries
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Return the top N most frequently used commands.
+    pub fn top_commands(&self, n: usize) -> Vec<String> {
+        use std::collections::HashMap;
+        let mut freq: HashMap<&str, usize> = HashMap::new();
+        for entry in &self.entries {
+            *freq.entry(entry.as_str()).or_insert(0) += 1;
+        }
+        let mut sorted: Vec<_> = freq.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.into_iter().take(n).map(|(s, _)| s.to_string()).collect()
     }
 }
 

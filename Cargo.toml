@@ -1,5 +1,5 @@
 [package]
-name = "yap"
+name = "yapper"
 version = "0.1.0"
 edition = "2021"
 description = "A modern, ergonomic UART serial TUI terminal for embedded workflows"

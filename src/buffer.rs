@@ -13,6 +13,8 @@ pub struct LineEntry {
     pub raw_bytes: Vec<u8>,
     /// Detected line ending that terminated this line.
     pub line_ending: LineEnding,
+    /// Whether this line was sent by the user (vs received from serial).
+    pub is_sent: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,6 +95,7 @@ impl ScrollbackBuffer {
                             timestamp: Local::now(),
                             raw_bytes: cr_raw,
                             line_ending: LineEnding::Cr,
+                            is_sent: false,
                         });
 
                         self.partial.push(byte as char);
@@ -112,6 +115,7 @@ impl ScrollbackBuffer {
             timestamp: Local::now(),
             raw_bytes: raw,
             line_ending,
+            is_sent: false,
         });
     }
 
@@ -120,6 +124,17 @@ impl ScrollbackBuffer {
             self.lines.pop_front();
         }
         self.lines.push_back(entry);
+    }
+
+    /// Push a sent command as a line entry (not from serial data).
+    pub fn push_sent_line(&mut self, text: String) {
+        self.push_line(LineEntry {
+            text,
+            timestamp: Local::now(),
+            raw_bytes: Vec::new(),
+            line_ending: LineEnding::None,
+            is_sent: true,
+        });
     }
 
     /// Get the total number of complete lines.

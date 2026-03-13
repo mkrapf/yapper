@@ -2,6 +2,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crate::buffer::ScrollbackBuffer;
+use crate::config::AppConfig;
 use crate::filter::LineFilter;
 use crate::history::CommandHistory;
 use crate::logging::SessionLogger;
@@ -108,12 +109,24 @@ pub struct App {
     pub layout: LayoutRegions,
     /// Text selection state for click-drag-copy.
     pub selection: TextSelection,
+    /// Ghost auto-complete suggestion from history.
+    pub ghost_suggestion: Option<String>,
+    /// Application config (for persistence).
+    pub app_config: AppConfig,
+    /// Timestamp of the last sent command (for response timing).
+    pub last_command_sent: Option<Instant>,
+    /// Duration of the last command round-trip.
+    pub last_response_time: Option<Duration>,
+    /// Quick-send commands (most frequently used from history).
+    pub quicksend: Vec<String>,
+    /// Whether to display sent messages in the terminal view.
+    pub show_sent: bool,
 }
 
 impl App {
-    pub fn new(serial_config: SerialConfig, line_ending: String) -> Self {
+    pub fn new(serial_config: SerialConfig, line_ending: String, app_config: AppConfig) -> Self {
         Self {
-            mode: Mode::Normal,
+            mode: Mode::Input,
             should_quit: false,
             buffer: ScrollbackBuffer::new(10000),
             input_text: String::new(),
@@ -147,6 +160,12 @@ impl App {
             settings_field: 0,
             layout: LayoutRegions::default(),
             selection: TextSelection::new(),
+            ghost_suggestion: None,
+            app_config,
+            last_command_sent: None,
+            last_response_time: None,
+            quicksend: Vec::new(),
+            show_sent: true,
         }
     }
 
@@ -165,6 +184,9 @@ impl App {
                 self.serial_tx = Some(tx);
                 self.reconnect_port = Some(port_name.to_string());
                 self.set_status(format!("Connected to {}", port_name));
+                // Save last port for auto-connect on next launch
+                self.app_config.connection.last_port = Some(port_name.to_string());
+                self.app_config.save();
             }
             Err(e) => {
                 self.connection_state = ConnectionState::Error(e.to_string());
@@ -222,13 +244,15 @@ impl App {
         let data = format!("{}{}", text, line_ending);
 
         // Echo command to scrollback buffer
-        let echo = format!("> {}\n", text);
-        self.buffer.push_bytes(echo.as_bytes());
+        if self.show_sent {
+            self.buffer.push_sent_line(text.clone());
+        }
 
         if let Some(conn) = &self.connection {
             match conn.write(data.as_bytes()) {
                 Ok(_) => {
                     self.tx_bytes = conn.tx_bytes();
+                    self.last_command_sent = Some(Instant::now());
                 }
                 Err(_) => {
                     self.connection_state =
@@ -243,6 +267,22 @@ impl App {
 
         self.input_text.clear();
         self.input_cursor = 0;
+        self.ghost_suggestion = None;
+        self.update_quicksend();
+    }
+
+    /// Update the quick-send command list from history frequency.
+    pub fn update_quicksend(&mut self) {
+        self.quicksend = self.history.top_commands(8);
+    }
+
+    /// Send a quick-send command by index (0-based).
+    pub fn send_quicksend(&mut self, index: usize) {
+        if let Some(cmd) = self.quicksend.get(index).cloned() {
+            self.input_text = cmd;
+            self.input_cursor = self.input_text.len();
+            self.send_command();
+        }
     }
 
     /// Poll for serial events. Returns true if anything happened (needs re-render).
@@ -269,12 +309,16 @@ impl App {
         // Drain all available events
         loop {
             match rx.try_recv() {
-                Ok(SerialEvent::Data(data)) => {
+                Ok(SerialEvent::Data(data, received_at)) => {
                     self.rx_bytes += data.len() as u64;
                     self.logger.log_bytes(&data);
                     self.buffer.push_bytes(&data);
                     if self.follow_output {
                         self.scroll_offset = 0;
+                    }
+                    // Measure response time using reader-thread timestamp
+                    if let Some(sent_at) = self.last_command_sent.take() {
+                        self.last_response_time = Some(received_at.duration_since(sent_at));
                     }
                     changed = true;
                 }
@@ -384,9 +428,12 @@ impl App {
     // ── Scrolling ───────────────────────────────────────
 
     pub fn scroll_up(&mut self, lines: usize) {
-        let max_scroll = self.buffer.display_len().saturating_sub(1);
+        let view_height = self.layout.terminal_view.3 as usize; // height from layout
+        let max_scroll = self.buffer.display_len().saturating_sub(view_height);
         self.scroll_offset = (self.scroll_offset + lines).min(max_scroll);
-        self.follow_output = false;
+        if max_scroll > 0 {
+            self.follow_output = false;
+        }
     }
 
     pub fn scroll_down(&mut self, lines: usize) {
@@ -423,18 +470,21 @@ impl App {
     pub fn input_char(&mut self, c: char) {
         self.input_text.insert(self.input_cursor, c);
         self.input_cursor += 1;
+        self.update_ghost();
     }
 
     pub fn input_backspace(&mut self) {
         if self.input_cursor > 0 {
             self.input_cursor -= 1;
             self.input_text.remove(self.input_cursor);
+            self.update_ghost();
         }
     }
 
     pub fn input_delete(&mut self) {
         if self.input_cursor < self.input_text.len() {
             self.input_text.remove(self.input_cursor);
+            self.update_ghost();
         }
     }
 
@@ -452,6 +502,24 @@ impl App {
 
     pub fn input_cursor_end(&mut self) {
         self.input_cursor = self.input_text.len();
+    }
+
+    /// Update the ghost auto-complete suggestion from history.
+    pub fn update_ghost(&mut self) {
+        // Only suggest when cursor is at the end of input
+        if self.input_cursor != self.input_text.len() || self.input_text.is_empty() {
+            self.ghost_suggestion = None;
+            return;
+        }
+        self.ghost_suggestion = self.history.suggest(&self.input_text).map(|s| s.to_string());
+    }
+
+    /// Accept the current ghost suggestion, filling in the input text.
+    pub fn accept_suggestion(&mut self) {
+        if let Some(suggestion) = self.ghost_suggestion.take() {
+            self.input_text = suggestion;
+            self.input_cursor = self.input_text.len();
+        }
     }
 
     // ── History navigation ──────────────────────────────

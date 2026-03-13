@@ -9,6 +9,7 @@ pub struct AppConfig {
     pub behavior: BehaviorConfig,
     pub logging: LoggingConfig,
     pub history: HistoryConfig,
+    pub connection: ConnectionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +57,15 @@ pub struct HistoryConfig {
     pub file: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConnectionConfig {
+    /// Last connected port name (e.g. "COM3" or "/dev/ttyUSB0").
+    pub last_port: Option<String>,
+    /// Whether to auto-connect to last_port on startup.
+    pub auto_connect: bool,
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -64,6 +74,7 @@ impl Default for AppConfig {
             behavior: BehaviorConfig::default(),
             logging: LoggingConfig::default(),
             history: HistoryConfig::default(),
+            connection: ConnectionConfig::default(),
         }
     }
 }
@@ -123,6 +134,15 @@ impl Default for HistoryConfig {
     }
 }
 
+impl Default for ConnectionConfig {
+    fn default() -> Self {
+        Self {
+            last_port: None,
+            auto_connect: true,
+        }
+    }
+}
+
 impl AppConfig {
     /// Load config from the default XDG path, falling back to defaults.
     pub fn load() -> Self {
@@ -137,6 +157,19 @@ impl AppConfig {
             }
         }
         Self::default()
+    }
+
+    /// Save config to the default XDG path.
+    pub fn save(&self) {
+        if let Some(config_dir) = dirs::config_dir() {
+            let config_path = config_dir.join("yap").join("config.toml");
+            if let Some(parent) = config_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(content) = toml::to_string_pretty(self) {
+                let _ = std::fs::write(config_path, content);
+            }
+        }
     }
 }
 
