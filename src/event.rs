@@ -25,7 +25,10 @@ impl EventLoop {
         &mut self,
         terminal: &mut Terminal<B>,
         app: &mut App,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        <B as Backend>::Error: Send + Sync + 'static,
+    {
         let mut needs_render = true;
 
         loop {
