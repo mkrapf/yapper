@@ -1,4 +1,4 @@
-# yap 🔌
+# yapper 🔌
 
 A snappy, ergonomic serial terminal for embedded workflows. Built with Rust + [ratatui](https://ratatui.rs).
 
@@ -27,13 +27,13 @@ cargo install --path .
 
 ```bash
 # Auto-detect port
-yap
+yapper
 
 # Specify port and baud rate
-yap /dev/ttyUSB0 115200
+yapper /dev/ttyUSB0 115200
 
 # Full configuration
-yap /dev/ttyACM0 9600 --data-bits 8 --parity none --stop-bits 1
+yapper /dev/ttyACM0 9600 --data-bits 8 --parity none --stop-bits 1
 ```
 
 ### WSL
@@ -73,7 +73,7 @@ Works with `cargo.exe run` from WSL — connects to Windows COM ports directly.
 
 ### Macros
 
-Create `~/.config/yap/macros.toml`:
+Create `~/.config/yapper/macros.toml`:
 
 ```toml
 [[macros]]
