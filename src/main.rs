@@ -30,9 +30,9 @@ use std::io;
 use app::App;
 use event::EventLoop;
 
-/// yap — A modern UART serial TUI terminal for embedded workflows
+/// yapper — A modern UART serial TUI terminal for embedded workflows
 #[derive(Parser, Debug)]
-#[command(name = "yap", version, about)]
+#[command(name = "yapper", version, about)]
 struct Cli {
     /// Serial port to connect to (e.g. /dev/ttyUSB0)
     #[arg(value_name = "PORT")]

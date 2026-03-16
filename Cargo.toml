@@ -4,6 +4,10 @@ version = "0.2.0"
 edition = "2021"
 description = "A modern, ergonomic UART serial TUI terminal for embedded workflows"
 license = "MIT"
+repository = "https://github.com/mkrapf/yapper"
+homepage = "https://github.com/mkrapf/yapper"
+keywords = ["serial", "uart", "tui", "terminal", "embedded"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 ratatui = "0.30"

@@ -119,7 +119,7 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             auto_log: false,
-            log_directory: "~/.local/share/yap/logs".to_string(),
+            log_directory: "~/.local/share/yapper/logs".to_string(),
             log_format: "raw".to_string(),
         }
     }
@@ -129,7 +129,7 @@ impl Default for HistoryConfig {
     fn default() -> Self {
         Self {
             max_entries: 500,
-            file: "~/.local/share/yap/history".to_string(),
+            file: "~/.local/share/yapper/history".to_string(),
         }
     }
 }
@@ -147,7 +147,7 @@ impl AppConfig {
     /// Load config from the default XDG path, falling back to defaults.
     pub fn load() -> Self {
         if let Some(config_dir) = dirs::config_dir() {
-            let config_path = config_dir.join("yap").join("config.toml");
+            let config_path = config_dir.join("yapper").join("config.toml");
             if config_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&config_path) {
                     if let Ok(config) = toml::from_str(&content) {
@@ -162,7 +162,7 @@ impl AppConfig {
     /// Save config to the default XDG path.
     pub fn save(&self) {
         if let Some(config_dir) = dirs::config_dir() {
-            let config_path = config_dir.join("yap").join("config.toml");
+            let config_path = config_dir.join("yapper").join("config.toml");
             if let Some(parent) = config_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }

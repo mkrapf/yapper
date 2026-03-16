@@ -33,14 +33,14 @@ impl SessionLogger {
     /// Start logging to a file. Creates a new timestamped log file.
     pub fn start(&mut self) -> Result<PathBuf, String> {
         let log_dir = dirs::data_dir()
-            .map(|d| d.join("yap").join("logs"))
+            .map(|d| d.join("yapper").join("logs"))
             .ok_or_else(|| "Could not determine data directory".to_string())?;
 
         fs::create_dir_all(&log_dir)
             .map_err(|e| format!("Failed to create log directory: {}", e))?;
 
         let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-        let filename = format!("yap_{}.log", timestamp);
+        let filename = format!("yapper_{}.log", timestamp);
         let path = log_dir.join(&filename);
 
         let file = OpenOptions::new()
@@ -56,7 +56,7 @@ impl SessionLogger {
 
         // Write header
         self.write_line(&format!(
-            "--- yap session started at {} ---",
+            "--- yapper session started at {} ---",
             Local::now().format("%Y-%m-%d %H:%M:%S")
         ));
 
@@ -67,7 +67,7 @@ impl SessionLogger {
     pub fn stop(&mut self) {
         if self.is_active {
             self.write_line(&format!(
-                "--- yap session ended at {} ---",
+                "--- yapper session ended at {} ---",
                 Local::now().format("%Y-%m-%d %H:%M:%S")
             ));
         }

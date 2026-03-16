@@ -8,7 +8,7 @@ use crate::theme::Theme;
 /// Render the status bar at the top of the screen.
 pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let mut spans = vec![
-        Span::styled(" yap ", Theme::title()),
+        Span::styled(" yapper ", Theme::title()),
         Span::styled("── ", Theme::status_bar()),
     ];
 

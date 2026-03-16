@@ -16,7 +16,7 @@ pub struct CommandHistory {
 
 impl CommandHistory {
     pub fn new(max_entries: usize) -> Self {
-        let file_path = dirs::data_dir().map(|d| d.join("yap").join("history"));
+        let file_path = dirs::data_dir().map(|d| d.join("yapper").join("history"));
 
         let mut history = Self {
             entries: Vec::new(),

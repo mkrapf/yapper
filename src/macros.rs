@@ -30,7 +30,7 @@ pub struct MacroManager {
 
 impl MacroManager {
     pub fn new() -> Self {
-        let file_path = dirs::config_dir().map(|d| d.join("yap").join("macros.toml"));
+        let file_path = dirs::config_dir().map(|d| d.join("yapper").join("macros.toml"));
 
         let mut mgr = Self {
             macros: BTreeMap::new(),
