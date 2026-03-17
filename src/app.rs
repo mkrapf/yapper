@@ -137,6 +137,8 @@ pub struct App {
 
 impl App {
     pub fn new(serial_config: SerialConfig, line_ending: String, app_config: AppConfig) -> Self {
+        let history = CommandHistory::new(500);
+        let quicksend = history.top_commands(8);
         Self {
             mode: Mode::Input,
             should_quit: false,
@@ -158,7 +160,7 @@ impl App {
             show_timestamps: true,
             hex_mode: false,
             show_line_endings: false,
-            history: CommandHistory::new(500),
+            history,
             search: Search::new(),
             logger: SessionLogger::new(),
             auto_reconnect: true,
@@ -176,7 +178,7 @@ impl App {
             app_config,
             last_command_sent: None,
             last_response_time: None,
-            quicksend: Vec::new(),
+            quicksend,
             show_sent: true,
             filter_input: String::new(),
             filter_mode_is_exclude: false,
@@ -459,6 +461,8 @@ impl App {
         match crate::serial::auto_detect::auto_detect_baud(port_name) {
             Some(rate) => {
                 self.serial_config.baud_rate = rate;
+                self.app_config.defaults.baud_rate = rate;
+                self.app_config.save();
                 self.set_status(format!("Detected baud rate: {}", rate));
             }
             None => {
@@ -918,12 +922,46 @@ impl App {
         let summary = self.serial_config.summary();
         self.set_status(format!("Settings: {}", summary));
 
+        // Persist all serial settings to config file
+        self.sync_config_to_disk();
+
         // If connected, reconnect with new settings
         if let ConnectionState::Connected(port) = &self.connection_state {
             let port = port.clone();
             self.disconnect();
             self.connect(&port);
         }
+    }
+
+    /// Sync the current serial config and line ending to app_config and save to disk.
+    fn sync_config_to_disk(&mut self) {
+        self.app_config.defaults.baud_rate = self.serial_config.baud_rate;
+        self.app_config.defaults.data_bits = match self.serial_config.data_bits {
+            serialport::DataBits::Five => 5,
+            serialport::DataBits::Six => 6,
+            serialport::DataBits::Seven => 7,
+            serialport::DataBits::Eight => 8,
+        };
+        self.app_config.defaults.parity = match self.serial_config.parity {
+            serialport::Parity::None => "none".to_string(),
+            serialport::Parity::Odd => "odd".to_string(),
+            serialport::Parity::Even => "even".to_string(),
+        };
+        self.app_config.defaults.stop_bits = match self.serial_config.stop_bits {
+            serialport::StopBits::One => 1,
+            serialport::StopBits::Two => 2,
+        };
+        self.app_config.defaults.flow_control = match self.serial_config.flow_control {
+            serialport::FlowControl::None => "none".to_string(),
+            serialport::FlowControl::Software => "software".to_string(),
+            serialport::FlowControl::Hardware => "hardware".to_string(),
+        };
+        self.app_config.defaults.line_ending = match self.line_ending.as_str() {
+            "\n" => "lf".to_string(),
+            "\r" => "cr".to_string(),
+            _ => "crlf".to_string(),
+        };
+        self.app_config.save();
     }
 
     // ── Word-level cursor ───────────────────────────────

@@ -38,29 +38,29 @@ struct Cli {
     #[arg(value_name = "PORT")]
     port: Option<String>,
 
-    /// Baud rate
-    #[arg(value_name = "BAUD", default_value = "115200")]
-    baud: u32,
+    /// Baud rate (defaults to saved config value, or 115200)
+    #[arg(value_name = "BAUD")]
+    baud: Option<u32>,
 
     /// Data bits (5, 6, 7, 8)
-    #[arg(short, long, default_value = "8")]
-    data_bits: u8,
+    #[arg(short, long)]
+    data_bits: Option<u8>,
 
     /// Parity (none, odd, even)
-    #[arg(short, long, default_value = "none")]
-    parity: String,
+    #[arg(short, long)]
+    parity: Option<String>,
 
     /// Stop bits (1, 2)
-    #[arg(short, long, default_value = "1")]
-    stop_bits: u8,
+    #[arg(short, long)]
+    stop_bits: Option<u8>,
 
     /// Flow control (none, software, hardware)
-    #[arg(short, long, default_value = "none")]
-    flow_control: String,
+    #[arg(short, long)]
+    flow_control: Option<String>,
 
     /// Line ending to send (lf, crlf, cr)
-    #[arg(long, default_value = "crlf")]
-    line_ending: String,
+    #[arg(long)]
+    line_ending: Option<String>,
 
     /// Skip auto-connecting to the last used port
     #[arg(long)]
@@ -83,16 +83,16 @@ fn main() -> Result<()> {
         },
     )?;
 
-    // Create app
+    // Create app — merge CLI overrides with saved config defaults
     let serial_config = serial::config::SerialConfig {
-        baud_rate: cli.baud,
-        data_bits: parse_data_bits(cli.data_bits),
-        parity: parse_parity(&cli.parity),
-        stop_bits: parse_stop_bits(cli.stop_bits),
-        flow_control: parse_flow_control(&cli.flow_control),
+        baud_rate: cli.baud.unwrap_or(app_config.defaults.baud_rate),
+        data_bits: parse_data_bits(cli.data_bits.unwrap_or(app_config.defaults.data_bits)),
+        parity: parse_parity(cli.parity.as_deref().unwrap_or(&app_config.defaults.parity)),
+        stop_bits: parse_stop_bits(cli.stop_bits.unwrap_or(app_config.defaults.stop_bits)),
+        flow_control: parse_flow_control(cli.flow_control.as_deref().unwrap_or(&app_config.defaults.flow_control)),
     };
 
-    let line_ending = match cli.line_ending.as_str() {
+    let line_ending = match cli.line_ending.as_deref().unwrap_or(&app_config.defaults.line_ending) {
         "lf" => "\n",
         "cr" => "\r",
         _ => "\r\n",

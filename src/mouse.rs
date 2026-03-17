@@ -238,7 +238,7 @@ fn handle_settings_click(app: &mut App, row: u16) {
     }
 }
 
-/// Copy the selected text to clipboard.
+/// Copy the selected text to clipboard, formatted to match the rendered view.
 fn copy_selection(app: &mut App) {
     if !app.selection.is_selecting {
         return;
@@ -248,28 +248,81 @@ fn copy_selection(app: &mut App) {
     let regions = &app.layout;
     let (_, ty, _, th) = regions.terminal_view;
 
+    if app.hex_mode {
+        copy_hex_selection(app, start_row, end_row, ty, th);
+        return;
+    }
+
     let mut selected_text = String::new();
 
-    // Map screen rows to buffer lines
-    let total_lines = app.buffer.display_len();
-    let view_end = total_lines.saturating_sub(app.scroll_offset);
-    let view_start = view_end.saturating_sub(th as usize);
+    // Build the same filtered visible indices as the renderer
+    let filter_active = app.filter.is_active;
+    let mut visible_indices: Vec<usize> = Vec::new();
+    for i in 0..app.buffer.len() {
+        if filter_active {
+            if let Some(entry) = app.buffer.get(i) {
+                if !app.filter.should_display(&entry.text) {
+                    continue;
+                }
+            }
+        }
+        visible_indices.push(i);
+    }
+    if app.buffer.partial_line().is_some() {
+        visible_indices.push(app.buffer.len()); // sentinel for partial line
+    }
+
+    let total_visible = visible_indices.len();
+    let end = total_visible.saturating_sub(app.scroll_offset);
+    let start = end.saturating_sub(th as usize);
 
     for screen_row in start_row..=end_row {
         if screen_row < ty || screen_row >= ty + th {
             continue;
         }
         let line_offset = (screen_row - ty) as usize;
-        let line_index = view_start + line_offset;
+        let vi = start + line_offset;
 
-        if line_index < app.buffer.len() {
-            if let Some(entry) = app.buffer.get(line_index) {
-                if !selected_text.is_empty() {
-                    selected_text.push('\n');
-                }
-                selected_text.push_str(&entry.text);
-            }
+        if vi >= end {
+            continue;
         }
+
+        let i = visible_indices[vi];
+
+        let formatted = if i < app.buffer.len() {
+            if let Some(entry) = app.buffer.get(i) {
+                format_entry_for_copy(
+                    &entry.text,
+                    entry.timestamp,
+                    &entry.line_ending,
+                    entry.is_sent,
+                    app.show_timestamps,
+                    app.show_line_endings,
+                )
+            } else {
+                continue;
+            }
+        } else {
+            // Partial line
+            if let Some(partial) = app.buffer.partial_line() {
+                let mut line = String::new();
+                if app.show_timestamps {
+                    line.push_str(&format!(
+                        "[{}] ",
+                        chrono::Local::now().format("%H:%M:%S%.3f")
+                    ));
+                }
+                line.push_str(partial);
+                line
+            } else {
+                continue;
+            }
+        };
+
+        if !selected_text.is_empty() {
+            selected_text.push('\n');
+        }
+        selected_text.push_str(&formatted);
     }
 
     if !selected_text.is_empty() {
@@ -277,6 +330,93 @@ fn copy_selection(app: &mut App) {
             Ok(_) => {
                 let lines = end_row - start_row + 1;
                 app.set_status_pub(format!("Copied {} line(s)", lines));
+            }
+            Err(_) => {
+                app.set_status_pub("Clipboard unavailable".to_string());
+            }
+        }
+    }
+}
+
+/// Format a single buffer entry for clipboard copy, matching the rendered view.
+fn format_entry_for_copy(
+    text: &str,
+    timestamp: chrono::DateTime<chrono::Local>,
+    line_ending: &crate::buffer::LineEnding,
+    is_sent: bool,
+    show_timestamps: bool,
+    show_line_endings: bool,
+) -> String {
+    let mut line = String::new();
+
+    if show_timestamps {
+        line.push_str(&format!(
+            "[{}] ",
+            timestamp.format("%H:%M:%S%.3f")
+        ));
+    }
+
+    if is_sent {
+        line.push_str("❯ ");
+    }
+
+    line.push_str(text);
+
+    if show_line_endings && *line_ending != crate::buffer::LineEnding::None {
+        line.push(' ');
+        line.push_str(line_ending.display());
+    }
+
+    line
+}
+
+/// Copy hex view selection to clipboard.
+fn copy_hex_selection(app: &mut App, start_row: u16, end_row: u16, ty: u16, th: u16) {
+    let mut all_bytes = Vec::new();
+    for i in 0..app.buffer.len() {
+        if let Some(entry) = app.buffer.get(i) {
+            all_bytes.extend_from_slice(&entry.raw_bytes);
+        }
+    }
+
+    if all_bytes.is_empty() {
+        return;
+    }
+
+    let hex_lines = crate::hex::format_hex_lines(&all_bytes, 0);
+    let total = hex_lines.len();
+    let end = total.saturating_sub(app.scroll_offset);
+    let start = end.saturating_sub(th as usize);
+
+    let mut selected_text = String::new();
+
+    for screen_row in start_row..=end_row {
+        if screen_row < ty || screen_row >= ty + th {
+            continue;
+        }
+        let line_offset = (screen_row - ty) as usize;
+        let hex_idx = start + line_offset;
+
+        if hex_idx >= end {
+            continue;
+        }
+
+        if let Some(hex_line) = hex_lines.get(hex_idx) {
+            if !selected_text.is_empty() {
+                selected_text.push('\n');
+            }
+            selected_text.push_str(&format!(
+                "{:08x}  {:<23} {:<23} |{}|",
+                hex_line.offset, hex_line.hex_left, hex_line.hex_right, hex_line.ascii
+            ));
+        }
+    }
+
+    if !selected_text.is_empty() {
+        match cli_clipboard::set_contents(selected_text) {
+            Ok(_) => {
+                let lines = end_row - start_row + 1;
+                app.set_status_pub(format!("Copied {} hex line(s)", lines));
             }
             Err(_) => {
                 app.set_status_pub("Clipboard unavailable".to_string());
