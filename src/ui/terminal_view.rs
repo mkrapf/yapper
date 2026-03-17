@@ -22,7 +22,6 @@ fn render_text_view(app: &App, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    let total_lines = app.buffer.display_len();
     let mut lines: Vec<Line> = Vec::with_capacity(height);
 
     // Extract state as primitives to avoid lifetime issues with Line<'static>
@@ -35,10 +34,35 @@ fn render_text_view(app: &App, frame: &mut Frame, area: Rect) {
     let show_le = app.show_line_endings;
     let search_current = app.search.current_line();
     let search_matches: Vec<usize> = app.search.match_lines();
+    let filter_active = app.filter.is_active;
 
-    if total_lines == 0 {
+    // Build visible line indices (applying filter if active)
+    let mut visible_indices: Vec<usize> = Vec::new();
+    for i in 0..app.buffer.len() {
+        if filter_active {
+            if let Some(entry) = app.buffer.get(i) {
+                if !app.filter.should_display(&entry.text) {
+                    continue;
+                }
+            }
+        }
+        visible_indices.push(i);
+    }
+    // Add partial line index if present
+    let has_partial = app.buffer.partial_line().is_some();
+    if has_partial {
+        visible_indices.push(app.buffer.len()); // sentinel for partial line
+    }
+
+    let total_visible = visible_indices.len();
+
+    if total_visible == 0 {
         let empty_msg = if app.is_connected() {
-            "Waiting for data..."
+            if filter_active {
+                "No lines match current filters"
+            } else {
+                "Waiting for data..."
+            }
         } else {
             "Press 'p' to select a port, or 'c' to connect"
         };
@@ -47,11 +71,12 @@ fn render_text_view(app: &App, frame: &mut Frame, area: Rect) {
             Theme::status_disconnected(),
         )));
     } else {
-        let end = total_lines.saturating_sub(app.scroll_offset);
+        let end = total_visible.saturating_sub(app.scroll_offset);
         let start = end.saturating_sub(height);
 
-        for (screen_idx, i) in (start..end).enumerate() {
+        for (screen_idx, vi) in (start..end).enumerate() {
             let screen_row = area.y + screen_idx as u16;
+            let i = visible_indices[vi];
 
             let line = if i < app.buffer.len() {
                 if let Some(entry) = app.buffer.get(i) {

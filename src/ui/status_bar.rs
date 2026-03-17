@@ -68,11 +68,17 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     if app.hex_mode {
         indicators.push("HEX");
     }
+    if app.hex_input_mode {
+        indicators.push("HEX▹");
+    }
     if app.show_line_endings {
         indicators.push("EOL");
     }
     if !app.show_timestamps {
         indicators.push("!TS");
+    }
+    if app.filter.is_active {
+        indicators.push("FILT");
     }
     if !indicators.is_empty() {
         spans.push(Span::styled(

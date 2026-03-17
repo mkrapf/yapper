@@ -101,6 +101,14 @@ impl LineFilter {
             format!("{}{}", prefix, f.pattern)
         }).collect()
     }
+
+    /// Remove a filter by index.
+    pub fn remove(&mut self, index: usize) {
+        if index < self.filters.len() {
+            self.filters.remove(index);
+            self.is_active = !self.filters.is_empty();
+        }
+    }
 }
 
 #[cfg(test)]

@@ -28,6 +28,10 @@ pub enum Mode {
     Settings,
     /// Help overlay is shown.
     Help,
+    /// Macro selector popup is open.
+    MacroSelect,
+    /// Filter manager popup is open.
+    Filter,
 }
 
 /// Connection state for display purposes.
@@ -121,6 +125,14 @@ pub struct App {
     pub quicksend: Vec<String>,
     /// Whether to display sent messages in the terminal view.
     pub show_sent: bool,
+    /// Input text for the filter popup.
+    pub filter_input: String,
+    /// Whether filter input mode is exclude (true) vs include (false).
+    pub filter_mode_is_exclude: bool,
+    /// Selected filter index for deletion.
+    pub filter_select_index: usize,
+    /// Whether hex input mode is active.
+    pub hex_input_mode: bool,
 }
 
 impl App {
@@ -166,6 +178,10 @@ impl App {
             last_response_time: None,
             quicksend: Vec::new(),
             show_sent: true,
+            filter_input: String::new(),
+            filter_mode_is_exclude: false,
+            filter_select_index: 0,
+            hex_input_mode: false,
         }
     }
 
@@ -240,23 +256,51 @@ impl App {
         }
 
         let text = self.input_text.clone();
-        let line_ending = self.line_ending.clone();
-        let data = format!("{}{}", text, line_ending);
 
-        // Echo command to scrollback buffer
-        if self.show_sent {
-            self.buffer.push_sent_line(text.clone());
-        }
-
-        if let Some(conn) = &self.connection {
-            match conn.write(data.as_bytes()) {
-                Ok(_) => {
-                    self.tx_bytes = conn.tx_bytes();
-                    self.last_command_sent = Some(Instant::now());
+        // Hex input mode: parse space-separated hex bytes, send raw binary
+        if self.hex_input_mode {
+            match Self::parse_hex_bytes(&text) {
+                Ok(bytes) => {
+                    if self.show_sent {
+                        self.buffer.push_sent_line(format!("HEX: {}", text));
+                    }
+                    if let Some(conn) = &self.connection {
+                        match conn.write(&bytes) {
+                            Ok(_) => {
+                                self.tx_bytes = conn.tx_bytes();
+                                self.last_command_sent = Some(Instant::now());
+                            }
+                            Err(_) => {
+                                self.connection_state =
+                                    ConnectionState::Error("Write failed".to_string());
+                            }
+                        }
+                    }
                 }
-                Err(_) => {
-                    self.connection_state =
-                        ConnectionState::Error("Write failed".to_string());
+                Err(e) => {
+                    self.set_status(format!("Hex parse error: {}", e));
+                    return; // Don't clear input on error
+                }
+            }
+        } else {
+            let line_ending = self.line_ending.clone();
+            let data = format!("{}{}", text, line_ending);
+
+            // Echo command to scrollback buffer
+            if self.show_sent {
+                self.buffer.push_sent_line(text.clone());
+            }
+
+            if let Some(conn) = &self.connection {
+                match conn.write(data.as_bytes()) {
+                    Ok(_) => {
+                        self.tx_bytes = conn.tx_bytes();
+                        self.last_command_sent = Some(Instant::now());
+                    }
+                    Err(_) => {
+                        self.connection_state =
+                            ConnectionState::Error("Write failed".to_string());
+                    }
                 }
             }
         }
@@ -405,6 +449,20 @@ impl App {
             }
             Err(_) => {
                 // Will retry on next tick
+            }
+        }
+    }
+
+    /// Auto-detect the baud rate for a given port.
+    pub fn auto_detect_baud(&mut self, port_name: &str) {
+        self.set_status("Auto-detecting baud rate...".to_string());
+        match crate::serial::auto_detect::auto_detect_baud(port_name) {
+            Some(rate) => {
+                self.serial_config.baud_rate = rate;
+                self.set_status(format!("Detected baud rate: {}", rate));
+            }
+            None => {
+                self.set_status("Could not detect baud rate — no readable data".to_string());
             }
         }
     }
@@ -600,6 +658,15 @@ impl App {
         }
     }
 
+    /// Clear the scrollback buffer.
+    pub fn clear_buffer(&mut self) {
+        self.buffer.clear();
+        self.scroll_offset = 0;
+        self.follow_output = true;
+        self.search.deactivate();
+        self.set_status("Buffer cleared".to_string());
+    }
+
     // ── Status ──────────────────────────────────────────
 
     fn set_status(&mut self, msg: String) {
@@ -647,7 +714,47 @@ impl App {
         self.set_status("Filters cleared".to_string());
     }
 
+    /// Open the filter popup.
+    pub fn open_filter_popup(&mut self) {
+        self.filter_input.clear();
+        self.filter_select_index = 0;
+        self.mode = Mode::Filter;
+    }
+
+    /// Submit the current filter input.
+    pub fn submit_filter(&mut self) {
+        if self.filter_input.is_empty() {
+            return;
+        }
+        let pattern = self.filter_input.clone();
+        if self.filter_mode_is_exclude {
+            self.add_filter_exclude(&pattern);
+        } else {
+            self.add_filter_include(&pattern);
+        }
+        self.filter_input.clear();
+    }
+
+    /// Remove a filter by index.
+    pub fn remove_filter(&mut self, index: usize) {
+        self.filter.remove(index);
+        if self.filter.count() == 0 {
+            self.set_status("All filters removed".to_string());
+        }
+        // Keep select index in bounds
+        if self.filter_select_index >= self.filter.count() && self.filter_select_index > 0 {
+            self.filter_select_index -= 1;
+        }
+    }
+
     // ── Macros ──────────────────────────────────────────
+
+    /// Open the macro selector popup.
+    pub fn open_macro_selector(&mut self) {
+        self.macro_select_index = 0;
+        self.mode = Mode::MacroSelect;
+    }
+
 
     /// Send raw text over serial (used by macros).
     pub fn send_text(&mut self, text: &str) {
@@ -738,6 +845,15 @@ impl App {
                     FlowControl::Hardware => FlowControl::None,
                 };
             }
+            5 => {
+                // Line ending cycle: CRLF -> LF -> CR
+                self.line_ending = match self.line_ending.as_str() {
+                    "\r\n" => "\n".to_string(),
+                    "\n" => "\r".to_string(),
+                    "\r" => "\r\n".to_string(),
+                    _ => "\r\n".to_string(),
+                };
+            }
             _ => {}
         }
     }
@@ -783,6 +899,15 @@ impl App {
                     FlowControl::Hardware => FlowControl::Software,
                 };
             }
+            5 => {
+                // Line ending cycle backward: CRLF -> CR -> LF
+                self.line_ending = match self.line_ending.as_str() {
+                    "\r\n" => "\r".to_string(),
+                    "\n" => "\r\n".to_string(),
+                    "\r" => "\n".to_string(),
+                    _ => "\r\n".to_string(),
+                };
+            }
             _ => {}
         }
     }
@@ -799,5 +924,101 @@ impl App {
             self.disconnect();
             self.connect(&port);
         }
+    }
+
+    // ── Word-level cursor ───────────────────────────────
+
+    /// Move cursor one word to the left.
+    pub fn input_cursor_word_left(&mut self) {
+        let chars: Vec<char> = self.input_text.chars().collect();
+        if self.input_cursor == 0 {
+            return;
+        }
+        let mut pos = self.input_cursor;
+        // Skip non-alphanumeric
+        while pos > 0 && !chars[pos - 1].is_alphanumeric() {
+            pos -= 1;
+        }
+        // Skip alphanumeric
+        while pos > 0 && chars[pos - 1].is_alphanumeric() {
+            pos -= 1;
+        }
+        self.input_cursor = pos;
+    }
+
+    /// Move cursor one word to the right.
+    pub fn input_cursor_word_right(&mut self) {
+        let chars: Vec<char> = self.input_text.chars().collect();
+        let len = chars.len();
+        if self.input_cursor >= len {
+            return;
+        }
+        let mut pos = self.input_cursor;
+        // Skip alphanumeric
+        while pos < len && chars[pos].is_alphanumeric() {
+            pos += 1;
+        }
+        // Skip non-alphanumeric
+        while pos < len && !chars[pos].is_alphanumeric() {
+            pos += 1;
+        }
+        self.input_cursor = pos;
+    }
+
+    /// Delete one word backward (Ctrl+W).
+    pub fn input_delete_word_back(&mut self) {
+        if self.input_cursor == 0 {
+            return;
+        }
+        let old_cursor = self.input_cursor;
+        self.input_cursor_word_left();
+        let new_cursor = self.input_cursor;
+        // Remove characters between new_cursor and old_cursor
+        let chars: Vec<char> = self.input_text.chars().collect();
+        self.input_text = chars[..new_cursor]
+            .iter()
+            .chain(chars[old_cursor..].iter())
+            .collect();
+        self.update_ghost();
+    }
+
+    /// Kill the entire input line (Ctrl+U).
+    pub fn input_kill_line(&mut self) {
+        self.input_text.clear();
+        self.input_cursor = 0;
+        self.ghost_suggestion = None;
+    }
+
+    // ── Hex input ───────────────────────────────────────
+
+    /// Toggle hex input mode.
+    pub fn toggle_hex_input(&mut self) {
+        self.hex_input_mode = !self.hex_input_mode;
+        if self.hex_input_mode {
+            self.set_status("Hex input mode ON — type space-separated hex bytes".to_string());
+        } else {
+            self.set_status("Hex input mode OFF".to_string());
+        }
+    }
+
+    /// Parse a hex string into raw bytes.
+    /// Accepts space-separated hex pairs: "01 FF A0" or "01FFA0"
+    fn parse_hex_bytes(input: &str) -> Result<Vec<u8>, String> {
+        let cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+        if cleaned.is_empty() {
+            return Err("Empty hex input".to_string());
+        }
+        if cleaned.len() % 2 != 0 {
+            return Err("Odd number of hex digits".to_string());
+        }
+        let mut bytes = Vec::with_capacity(cleaned.len() / 2);
+        for i in (0..cleaned.len()).step_by(2) {
+            let byte_str = &cleaned[i..i + 2];
+            match u8::from_str_radix(byte_str, 16) {
+                Ok(b) => bytes.push(b),
+                Err(_) => return Err(format!("Invalid hex byte: {}", byte_str)),
+            }
+        }
+        Ok(bytes)
     }
 }

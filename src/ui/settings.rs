@@ -13,7 +13,7 @@ pub const BAUD_RATES: &[u32] = &[
 /// Render the UART settings popup.
 pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let popup_width = 50.min(area.width.saturating_sub(4));
-    let popup_height = 16.min(area.height.saturating_sub(4));
+    let popup_height = 18.min(area.height.saturating_sub(4));
     let popup_area = centered_rect(popup_width, popup_height, area);
 
     frame.render_widget(Clear, popup_area);
@@ -37,6 +37,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         ("Parity", format!("◂ {} ▸", parity_str(config.parity))),
         ("Stop Bits", format!("◂ {} ▸", stop_bits_str(config.stop_bits))),
         ("Flow Ctrl", format!("◂ {} ▸", flow_control_str(config.flow_control))),
+        ("Line End", format!("◂ {} ▸", line_ending_display(&app.line_ending))),
     ];
 
     let mut lines = Vec::new();
@@ -112,6 +113,15 @@ fn flow_control_str(fc: serialport::FlowControl) -> &'static str {
         serialport::FlowControl::None => "None",
         serialport::FlowControl::Software => "Software",
         serialport::FlowControl::Hardware => "Hardware",
+    }
+}
+
+fn line_ending_display(le: &str) -> &'static str {
+    match le {
+        "\r\n" => "CRLF",
+        "\n" => "LF",
+        "\r" => "CR",
+        _ => "CRLF",
     }
 }
 

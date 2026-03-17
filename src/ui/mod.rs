@@ -5,6 +5,8 @@ pub mod settings;
 mod status_bar;
 mod terminal_view;
 mod quicksend_bar;
+mod macro_selector;
+mod filter_popup;
 
 use ratatui::prelude::*;
 use ratatui::text::{Line, Span};
@@ -83,6 +85,12 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         }
         Mode::Help => {
             help::render(app, frame, area);
+        }
+        Mode::MacroSelect => {
+            macro_selector::render(app, frame, area);
+        }
+        Mode::Filter => {
+            filter_popup::render(app, frame, area);
         }
         _ => {}
     }
@@ -185,6 +193,24 @@ fn render_help_hints(app: &App, frame: &mut Frame, area: Rect) {
         Mode::Help => vec![
             Span::styled("Esc", Theme::help_key()),
             Span::styled(": close help", Theme::help_bar()),
+        ],
+        Mode::MacroSelect => vec![
+            Span::styled("Enter", Theme::help_key()),
+            Span::styled(": run  ", Theme::help_bar()),
+            Span::styled("j/k", Theme::help_key()),
+            Span::styled(": navigate  ", Theme::help_bar()),
+            Span::styled("Esc", Theme::help_key()),
+            Span::styled(": close", Theme::help_bar()),
+        ],
+        Mode::Filter => vec![
+            Span::styled("Enter", Theme::help_key()),
+            Span::styled(": add filter  ", Theme::help_bar()),
+            Span::styled("Tab", Theme::help_key()),
+            Span::styled(": ±mode  ", Theme::help_bar()),
+            Span::styled("d", Theme::help_key()),
+            Span::styled(": delete  ", Theme::help_bar()),
+            Span::styled("Esc", Theme::help_key()),
+            Span::styled(": close", Theme::help_bar()),
         ],
     };
 

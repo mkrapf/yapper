@@ -6,11 +6,17 @@ use crate::app::{App, Mode};
 pub fn handle_key_event(app: &mut App, key: KeyEvent) {
     // Global keybindings (work in any mode)
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        match app.mode {
-            Mode::Normal => app.should_quit = true,
-            _ => app.mode = Mode::Normal,
-        }
+        // Always return to Input mode (never quit — users press Ctrl+C after selecting text)
+        app.mode = Mode::Input;
         return;
+    }
+
+    // Clear buffer (works in Normal and Input modes)
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('l') {
+        if matches!(app.mode, Mode::Normal | Mode::Input) {
+            app.clear_buffer();
+            return;
+        }
     }
 
     // F-key quick-send (works in Normal and Input modes)
@@ -31,6 +37,8 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
         Mode::PortSelect => handle_port_select_mode(app, key),
         Mode::Settings => handle_settings_mode(app, key),
         Mode::Help => handle_help_mode(app, key),
+        Mode::MacroSelect => handle_macro_select_mode(app, key),
+        Mode::Filter => handle_filter_mode(app, key),
     }
 }
 
@@ -45,6 +53,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Scrolling
         KeyCode::Char('j') | KeyCode::Down => app.scroll_down(1),
         KeyCode::Char('k') | KeyCode::Up => app.scroll_up(1),
+        KeyCode::Char('x') => app.show_sent = !app.show_sent,
         KeyCode::Char('G') => app.scroll_to_bottom(),
         KeyCode::Char('g') => app.scroll_to_top(),
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -66,13 +75,19 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('h') => app.toggle_hex_mode(),
         KeyCode::Char('e') => app.toggle_line_endings(),
         KeyCode::Char('l') => app.toggle_logging(),
-        KeyCode::Char('x') => app.show_sent = !app.show_sent,
+
 
         // Port selector
         KeyCode::Char('p') => app.open_port_selector(),
 
         // UART settings
         KeyCode::Char('s') => app.open_settings(),
+
+        // Macro selector
+        KeyCode::Char('m') => app.open_macro_selector(),
+
+        // Filter popup
+        KeyCode::Char('f') => app.open_filter_popup(),
 
         // Connect/disconnect
         KeyCode::Char('c') => app.toggle_connection(),
@@ -102,6 +117,13 @@ fn handle_input_mode(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Delete => {
             app.input_delete();
+        }
+        // Word-level cursor movement (must come before unguarded Left/Right)
+        KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input_cursor_word_left();
+        }
+        KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input_cursor_word_right();
         }
         KeyCode::Left => {
             app.input_cursor_left();
@@ -135,6 +157,15 @@ fn handle_input_mode(app: &mut App, key: KeyEvent) {
         // Scroll without leaving input mode
         KeyCode::PageUp => app.scroll_up(20),
         KeyCode::PageDown => app.scroll_down(20),
+        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input_delete_word_back();
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input_kill_line();
+        }
+        KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.toggle_hex_input();
+        }
         // Quick access keybinds (stay in input mode after closing popup)
         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.open_port_selector();
@@ -212,6 +243,13 @@ fn handle_port_select_mode(app: &mut App, key: KeyEvent) {
             app.available_ports = crate::serial::detector::available_ports();
             app.port_select_index = 0;
         }
+        // Auto-detect baud rate
+        KeyCode::Char('a') => {
+            if let Some(port) = app.available_ports.get(app.port_select_index) {
+                let port_name = port.name.clone();
+                app.auto_detect_baud(&port_name);
+            }
+        }
         _ => {}
     }
 }
@@ -239,7 +277,7 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if app.settings_field < 4 {
+            if app.settings_field < 5 {
                 app.settings_field += 1;
             }
         }
@@ -248,6 +286,69 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Left | KeyCode::Char('h') => {
             app.settings_prev_value();
+        }
+        _ => {}
+    }
+}
+
+fn handle_macro_select_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = Mode::Input;
+        }
+        KeyCode::Enter => {
+            app.execute_selected_macro();
+            app.mode = Mode::Input;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.macro_select_index > 0 {
+                app.macro_select_index -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let count = app.macros.list().len();
+            if app.macro_select_index + 1 < count {
+                app.macro_select_index += 1;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_filter_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = Mode::Input;
+        }
+        KeyCode::Enter => {
+            app.submit_filter();
+        }
+        KeyCode::Tab => {
+            app.filter_mode_is_exclude = !app.filter_mode_is_exclude;
+        }
+        KeyCode::Backspace => {
+            app.filter_input.pop();
+        }
+        KeyCode::Char('d') if app.filter_input.is_empty() => {
+            // Delete selected filter (only when not typing)
+            let count = app.filter.count();
+            if count > 0 && app.filter_select_index < count {
+                app.remove_filter(app.filter_select_index);
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') if app.filter_input.is_empty() => {
+            if app.filter_select_index > 0 {
+                app.filter_select_index -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') if app.filter_input.is_empty() => {
+            let count = app.filter.count();
+            if app.filter_select_index + 1 < count {
+                app.filter_select_index += 1;
+            }
+        }
+        KeyCode::Char(c) => {
+            app.filter_input.push(c);
         }
         _ => {}
     }

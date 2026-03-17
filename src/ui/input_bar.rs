@@ -15,14 +15,21 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Theme::input_bar()
     };
 
-    let prompt_style = if is_active {
+    let prompt = if app.hex_input_mode { " HEX❯ " } else { " ❯ " };
+    let prompt_len = if app.hex_input_mode { 6u16 } else { 3u16 };
+
+    let prompt_style = if app.hex_input_mode {
+        Style::default()
+            .fg(Color::Rgb(255, 184, 108))
+            .add_modifier(Modifier::BOLD)
+    } else if is_active {
         Theme::input_prompt()
     } else {
         Theme::input_prompt_inactive()
     };
 
     let mut spans = vec![
-        Span::styled(" ❯ ", prompt_style),
+        Span::styled(prompt, prompt_style),
         Span::styled(&app.input_text, bg_style),
     ];
 
@@ -41,9 +48,9 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 
     // Place the cursor if in input mode
-    if is_active {
+    if is_active || app.hex_input_mode {
         frame.set_cursor_position((
-            area.x + 3 + app.input_cursor as u16,
+            area.x + prompt_len + app.input_cursor as u16,
             area.y,
         ));
     }
