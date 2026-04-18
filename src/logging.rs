@@ -8,11 +8,12 @@ use chrono::Local;
 pub struct SessionLogger {
     file: Option<File>,
     file_path: Option<PathBuf>,
+    log_dir: Option<PathBuf>,
     format: LogFormat,
     pub is_active: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogFormat {
     /// Raw bytes as received.
     Raw,
@@ -22,18 +23,29 @@ pub enum LogFormat {
 
 impl SessionLogger {
     pub fn new() -> Self {
+        Self::with_options(default_log_dir(), LogFormat::Timestamped)
+    }
+
+    pub fn from_config(log_directory: &str, log_format: &str) -> Self {
+        let log_dir = crate::config::expand_path(log_directory).or_else(default_log_dir);
+        Self::with_options(log_dir, LogFormat::from_config(log_format))
+    }
+
+    pub fn with_options(log_dir: Option<PathBuf>, format: LogFormat) -> Self {
         Self {
             file: None,
             file_path: None,
-            format: LogFormat::Timestamped,
+            log_dir,
+            format,
             is_active: false,
         }
     }
 
     /// Start logging to a file. Creates a new timestamped log file.
     pub fn start(&mut self) -> Result<PathBuf, String> {
-        let log_dir = dirs::data_dir()
-            .map(|d| d.join("yapper").join("logs"))
+        let log_dir = self
+            .log_dir
+            .clone()
             .ok_or_else(|| "Could not determine data directory".to_string())?;
 
         fs::create_dir_all(&log_dir)
@@ -121,4 +133,30 @@ impl SessionLogger {
     pub fn file_path(&self) -> Option<&PathBuf> {
         self.file_path.as_ref()
     }
+
+    pub fn log_dir(&self) -> Option<&PathBuf> {
+        self.log_dir.as_ref()
+    }
+
+    pub fn format(&self) -> LogFormat {
+        self.format
+    }
+
+    #[cfg(test)]
+    pub fn new_in_memory(format: LogFormat) -> Self {
+        Self::with_options(None, format)
+    }
+}
+
+impl LogFormat {
+    pub fn from_config(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "raw" => Self::Raw,
+            _ => Self::Timestamped,
+        }
+    }
+}
+
+fn default_log_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("yapper").join("logs"))
 }

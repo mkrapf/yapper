@@ -27,7 +27,7 @@ use crossterm::{
 use ratatui::prelude::*;
 use std::io;
 
-use app::App;
+use app::{App, Mode};
 use event::EventLoop;
 
 /// yapper — A modern UART serial TUI terminal for embedded workflows
@@ -89,10 +89,18 @@ fn main() -> Result<()> {
         data_bits: parse_data_bits(cli.data_bits.unwrap_or(app_config.defaults.data_bits)),
         parity: parse_parity(cli.parity.as_deref().unwrap_or(&app_config.defaults.parity)),
         stop_bits: parse_stop_bits(cli.stop_bits.unwrap_or(app_config.defaults.stop_bits)),
-        flow_control: parse_flow_control(cli.flow_control.as_deref().unwrap_or(&app_config.defaults.flow_control)),
+        flow_control: parse_flow_control(
+            cli.flow_control
+                .as_deref()
+                .unwrap_or(&app_config.defaults.flow_control),
+        ),
     };
 
-    let line_ending = match cli.line_ending.as_deref().unwrap_or(&app_config.defaults.line_ending) {
+    let line_ending = match cli
+        .line_ending
+        .as_deref()
+        .unwrap_or(&app_config.defaults.line_ending)
+    {
         "lf" => "\n",
         "cr" => "\r",
         _ => "\r\n",
@@ -101,12 +109,17 @@ fn main() -> Result<()> {
     let mut app = App::new(serial_config, line_ending.to_string(), app_config.clone());
 
     // Connect: CLI port takes priority, then auto-connect to last port
-    if let Some(port) = cli.port {
-        app.connect(&port);
+    if let Some(port) = cli.port.as_deref() {
+        app.connect(port);
     } else if !cli.no_auto && app_config.connection.auto_connect {
         if let Some(last_port) = &app_config.connection.last_port {
             app.connect(last_port);
         }
+    }
+
+    if cli.port.is_none() && !app.is_connected() {
+        app.mode = Mode::Normal;
+        app.open_port_selector();
     }
 
     // Run event loop

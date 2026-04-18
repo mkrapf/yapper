@@ -1,6 +1,6 @@
-use std::ops::Range;
 use ratatui::style::{Color, Modifier, Style};
 use regex::Regex;
+use std::ops::Range;
 use std::sync::LazyLock;
 
 /// A highlight rule: regex pattern mapped to a style.
@@ -19,12 +19,16 @@ static RULES: LazyLock<Vec<HighlightRule>> = LazyLock::new(|| {
         // OK / READY responses
         HighlightRule {
             regex: Regex::new(r"\b(OK|READY|SUCCESS|DONE|PASS(ED)?)\b").unwrap(),
-            style: Style::default().fg(Color::Rgb(80, 250, 123)).add_modifier(Modifier::BOLD), // green
+            style: Style::default()
+                .fg(Color::Rgb(80, 250, 123))
+                .add_modifier(Modifier::BOLD), // green
         },
         // ERROR / FAIL responses
         HighlightRule {
             regex: Regex::new(r"(?i)\b(ERROR|FAIL(ED|URE)?|FAULT|PANIC|ABORT)\b").unwrap(),
-            style: Style::default().fg(Color::Rgb(255, 85, 85)).add_modifier(Modifier::BOLD), // red
+            style: Style::default()
+                .fg(Color::Rgb(255, 85, 85))
+                .add_modifier(Modifier::BOLD), // red
         },
         // Hex values (0xFF)
         HighlightRule {
@@ -59,7 +63,9 @@ pub fn highlight_line(text: &str) -> Vec<(Range<usize>, Style)> {
         for m in rule.regex.find_iter(text) {
             let range = m.start()..m.end();
             // Check for overlap with existing ranges
-            let overlaps = ranges.iter().any(|(r, _)| r.start < range.end && range.start < r.end);
+            let overlaps = ranges
+                .iter()
+                .any(|(r, _)| r.start < range.end && range.start < r.end);
             if !overlaps {
                 ranges.push((range, rule.style));
             }

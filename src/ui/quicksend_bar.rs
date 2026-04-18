@@ -28,7 +28,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    spans.insert(0, Span::styled(" ", Theme::help_bar()));
+    spans.insert(0, Span::styled(" Quick send (F1-F8): ", Theme::help_bar()));
 
     let line = Line::from(spans);
     let paragraph = Paragraph::new(line).style(Theme::help_bar());

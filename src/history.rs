@@ -16,8 +16,15 @@ pub struct CommandHistory {
 
 impl CommandHistory {
     pub fn new(max_entries: usize) -> Self {
-        let file_path = dirs::data_dir().map(|d| d.join("yapper").join("history"));
+        Self::with_path(max_entries, Self::default_file_path())
+    }
 
+    pub fn from_config(max_entries: usize, file: &str) -> Self {
+        let file_path = crate::config::expand_path(file).or_else(Self::default_file_path);
+        Self::with_path(max_entries, file_path)
+    }
+
+    pub fn with_path(max_entries: usize, file_path: Option<PathBuf>) -> Self {
         let mut history = Self {
             entries: Vec::new(),
             max_entries,
@@ -28,6 +35,23 @@ impl CommandHistory {
 
         history.load();
         history
+    }
+
+    fn default_file_path() -> Option<PathBuf> {
+        dirs::data_dir().map(|d| d.join("yapper").join("history"))
+    }
+
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    pub fn file_path(&self) -> Option<&PathBuf> {
+        self.file_path.as_ref()
+    }
+
+    #[cfg(test)]
+    pub fn new_in_memory(max_entries: usize) -> Self {
+        Self::with_path(max_entries, None)
     }
 
     /// Add a command to history. Deduplicates consecutive entries.
@@ -180,7 +204,11 @@ impl CommandHistory {
         }
         let mut sorted: Vec<_> = freq.into_iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(&a.1));
-        sorted.into_iter().take(n).map(|(s, _)| s.to_string()).collect()
+        sorted
+            .into_iter()
+            .take(n)
+            .map(|(s, _)| s.to_string())
+            .collect()
     }
 }
 

@@ -1,12 +1,12 @@
+mod filter_popup;
 mod help;
 mod input_bar;
+mod macro_selector;
 mod port_selector;
+mod quicksend_bar;
 pub mod settings;
 mod status_bar;
 mod terminal_view;
-mod quicksend_bar;
-mod macro_selector;
-mod filter_popup;
 
 use ratatui::prelude::*;
 use ratatui::text::{Line, Span};
@@ -120,10 +120,7 @@ fn render_search_bar(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 
     if is_active {
-        frame.set_cursor_position((
-            area.x + 2 + app.search.query.len() as u16,
-            area.y,
-        ));
+        frame.set_cursor_position((area.x + 2 + app.search.query.len() as u16, area.y));
     }
 }
 
@@ -143,6 +140,10 @@ fn render_help_hints(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled(": ports  ", Theme::help_bar()),
             Span::styled("s", Theme::help_key()),
             Span::styled(": settings  ", Theme::help_bar()),
+            Span::styled("m", Theme::help_key()),
+            Span::styled(": macros  ", Theme::help_bar()),
+            Span::styled("f", Theme::help_key()),
+            Span::styled(": filters  ", Theme::help_bar()),
             Span::styled("l", Theme::help_key()),
             Span::styled(": log  ", Theme::help_bar()),
             Span::styled("?", Theme::help_key()),
@@ -153,12 +154,16 @@ fn render_help_hints(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled(": send  ", Theme::help_bar()),
             Span::styled("↑/↓", Theme::help_key()),
             Span::styled(": history  ", Theme::help_bar()),
+            Span::styled("Tab", Theme::help_key()),
+            Span::styled(": accept  ", Theme::help_bar()),
             Span::styled("PgUp/Dn", Theme::help_key()),
             Span::styled(": scroll  ", Theme::help_bar()),
             Span::styled("^P", Theme::help_key()),
             Span::styled(": ports  ", Theme::help_bar()),
             Span::styled("^S", Theme::help_key()),
             Span::styled(": settings  ", Theme::help_bar()),
+            Span::styled("^H", Theme::help_key()),
+            Span::styled(": hex in  ", Theme::help_bar()),
             Span::styled("Esc", Theme::help_key()),
             Span::styled(": browse", Theme::help_bar()),
         ],
@@ -175,6 +180,8 @@ fn render_help_hints(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled(": connect  ", Theme::help_bar()),
             Span::styled("j/k", Theme::help_key()),
             Span::styled(": navigate  ", Theme::help_bar()),
+            Span::styled("a", Theme::help_key()),
+            Span::styled(": auto-baud  ", Theme::help_bar()),
             Span::styled("r", Theme::help_key()),
             Span::styled(": refresh  ", Theme::help_bar()),
             Span::styled("Esc", Theme::help_key()),
@@ -204,10 +211,12 @@ fn render_help_hints(app: &App, frame: &mut Frame, area: Rect) {
         ],
         Mode::Filter => vec![
             Span::styled("Enter", Theme::help_key()),
-            Span::styled(": add filter  ", Theme::help_bar()),
+            Span::styled(": apply  ", Theme::help_bar()),
+            Span::styled("↑/↓", Theme::help_key()),
+            Span::styled(": select  ", Theme::help_bar()),
             Span::styled("Tab", Theme::help_key()),
             Span::styled(": ±mode  ", Theme::help_bar()),
-            Span::styled("d", Theme::help_key()),
+            Span::styled("Del/^D", Theme::help_key()),
             Span::styled(": delete  ", Theme::help_bar()),
             Span::styled("Esc", Theme::help_key()),
             Span::styled(": close", Theme::help_bar()),
@@ -223,14 +232,11 @@ fn render_help_hints(app: &App, frame: &mut Frame, area: Rect) {
     }
     prefix.push_str(" │ ");
 
-    let mut line_spans = vec![
-        Span::styled(prefix, Theme::help_bar()),
-    ];
+    let mut line_spans = vec![Span::styled(prefix, Theme::help_bar())];
     line_spans.extend(hints);
 
     let line = Line::from(line_spans);
-    let paragraph = ratatui::widgets::Paragraph::new(line)
-        .style(Theme::help_bar());
+    let paragraph = ratatui::widgets::Paragraph::new(line).style(Theme::help_bar());
     frame.render_widget(paragraph, area);
 }
 

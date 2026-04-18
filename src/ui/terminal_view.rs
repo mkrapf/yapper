@@ -2,7 +2,7 @@ use ratatui::prelude::*;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::app::App;
+use crate::app::{App, Mode};
 use crate::buffer::LineEnding;
 use crate::hex;
 use crate::theme::Theme;
@@ -31,7 +31,9 @@ fn render_text_view(app: &App, frame: &mut Frame, area: Rect) {
         None
     };
     let show_ts = app.show_timestamps;
+    let timestamp_format = app.timestamp_format.as_str();
     let show_le = app.show_line_endings;
+    let color_log_levels = app.color_log_levels;
     let search_current = app.search.current_line();
     let search_matches: Vec<usize> = app.search.match_lines();
     let filter_active = app.filter.is_active;
@@ -63,8 +65,10 @@ fn render_text_view(app: &App, frame: &mut Frame, area: Rect) {
             } else {
                 "Waiting for data..."
             }
+        } else if app.mode == Mode::Input {
+            "Disconnected. Press Ctrl+P to choose a port, or Esc for browse mode"
         } else {
-            "Press 'p' to select a port, or 'c' to connect"
+            "Disconnected. Press p to choose a port, c to connect, or ? for help"
         };
         lines.push(Line::from(Span::styled(
             format!("  {}", empty_msg),
@@ -86,7 +90,9 @@ fn render_text_view(app: &App, frame: &mut Frame, area: Rect) {
                         &entry.line_ending,
                         i,
                         show_ts,
+                        timestamp_format,
                         show_le,
+                        color_log_levels,
                         search_current,
                         &search_matches,
                         entry.is_sent,
@@ -100,7 +106,7 @@ fn render_text_view(app: &App, frame: &mut Frame, area: Rect) {
                     let mut spans = Vec::new();
                     if show_ts {
                         spans.push(Span::styled(
-                            format!(" [{}] ", chrono::Local::now().format("%H:%M:%S%.3f")),
+                            format!(" [{}] ", chrono::Local::now().format(timestamp_format)),
                             Theme::timestamp(),
                         ));
                     } else {
@@ -122,8 +128,7 @@ fn render_text_view(app: &App, frame: &mut Frame, area: Rect) {
         lines.push(Line::from(""));
     }
 
-    let paragraph = Paragraph::new(lines)
-        .style(Style::default().bg(Theme::background()));
+    let paragraph = Paragraph::new(lines).style(Style::default().bg(Theme::background()));
     frame.render_widget(paragraph, area);
 }
 
@@ -235,18 +240,9 @@ fn render_hex_view(app: &App, frame: &mut Frame, area: Rect) {
     for i in start..end {
         if let Some(hex_line) = hex_lines.get(i) {
             let line = Line::from(vec![
-                Span::styled(
-                    format!(" {:08x}  ", hex_line.offset),
-                    Theme::timestamp(),
-                ),
-                Span::styled(
-                    format!("{:<23} ", hex_line.hex_left),
-                    Theme::output_text(),
-                ),
-                Span::styled(
-                    format!("{:<23} ", hex_line.hex_right),
-                    Theme::output_text(),
-                ),
+                Span::styled(format!(" {:08x}  ", hex_line.offset), Theme::timestamp()),
+                Span::styled(format!("{:<23} ", hex_line.hex_left), Theme::output_text()),
+                Span::styled(format!("{:<23} ", hex_line.hex_right), Theme::output_text()),
                 Span::styled("|", Theme::line_ending_indicator()),
                 Span::styled(&hex_line.ascii, Theme::status_baud()),
                 Span::styled("|", Theme::line_ending_indicator()),
@@ -259,8 +255,7 @@ fn render_hex_view(app: &App, frame: &mut Frame, area: Rect) {
         lines.push(Line::from(""));
     }
 
-    let paragraph = Paragraph::new(lines)
-        .style(Style::default().bg(Theme::background()));
+    let paragraph = Paragraph::new(lines).style(Style::default().bg(Theme::background()));
     frame.render_widget(paragraph, area);
 }
 
@@ -272,7 +267,9 @@ fn build_line(
     line_ending: &LineEnding,
     line_index: usize,
     show_timestamps: bool,
+    timestamp_format: &str,
     show_line_endings: bool,
+    color_log_levels: bool,
     search_current: Option<usize>,
     search_matches: &[usize],
     is_sent: bool,
@@ -280,7 +277,7 @@ fn build_line(
     let mut spans = Vec::new();
 
     if show_timestamps {
-        let ts = timestamp.format("%H:%M:%S%.3f").to_string();
+        let ts = timestamp.format(timestamp_format).to_string();
         spans.push(Span::styled(format!(" [{}] ", ts), Theme::timestamp()));
     } else {
         spans.push(Span::raw(" "));
@@ -325,17 +322,14 @@ fn build_line(
         // Apply syntax highlighting
         let highlights = crate::highlight::highlight_line(text);
         if highlights.is_empty() {
-            let style = Theme::style_for_line(text);
+            let style = Theme::style_for_line(text, color_log_levels);
             spans.push(Span::styled(owned_text, style));
         } else {
-            let base_style = Theme::style_for_line(text);
+            let base_style = Theme::style_for_line(text, color_log_levels);
             let mut pos = 0;
             for (range, hl_style) in &highlights {
                 if range.start > pos {
-                    spans.push(Span::styled(
-                        text[pos..range.start].to_string(),
-                        base_style,
-                    ));
+                    spans.push(Span::styled(text[pos..range.start].to_string(), base_style));
                 }
                 spans.push(Span::styled(
                     text[range.start..range.end].to_string(),
@@ -344,10 +338,7 @@ fn build_line(
                 pos = range.end;
             }
             if pos < text.len() {
-                spans.push(Span::styled(
-                    text[pos..].to_string(),
-                    base_style,
-                ));
+                spans.push(Span::styled(text[pos..].to_string(), base_style));
             }
         }
     }

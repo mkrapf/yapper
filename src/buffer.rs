@@ -84,8 +84,7 @@ impl ScrollbackBuffer {
                     // If we have a pending \r and this byte isn't \n,
                     // commit the previous line as CR-terminated.
                     if self.partial.ends_with('\r') {
-                        let cr_text: String =
-                            self.partial[..self.partial.len() - 1].to_string();
+                        let cr_text: String = self.partial[..self.partial.len() - 1].to_string();
                         let cr_raw = self.partial_raw[..self.partial_raw.len() - 1].to_vec();
                         self.partial = String::new();
                         self.partial_raw = vec![byte];
@@ -163,6 +162,10 @@ impl ScrollbackBuffer {
     /// Total number of displayable lines (complete + partial).
     pub fn display_len(&self) -> usize {
         self.lines.len() + if self.partial.is_empty() { 0 } else { 1 }
+    }
+
+    pub fn max_lines(&self) -> usize {
+        self.max_lines
     }
 
     /// Iterate over all complete lines.

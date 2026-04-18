@@ -30,8 +30,7 @@ impl LineFilter {
 
     /// Add an include filter.
     pub fn add_include(&mut self, pattern: &str) -> Result<(), String> {
-        let regex = regex::Regex::new(pattern)
-            .map_err(|e| format!("Invalid regex: {}", e))?;
+        let regex = regex::Regex::new(pattern).map_err(|e| format!("Invalid regex: {}", e))?;
         self.filters.push(FilterRule {
             pattern: pattern.to_string(),
             regex,
@@ -43,8 +42,7 @@ impl LineFilter {
 
     /// Add an exclude filter.
     pub fn add_exclude(&mut self, pattern: &str) -> Result<(), String> {
-        let regex = regex::Regex::new(pattern)
-            .map_err(|e| format!("Invalid regex: {}", e))?;
+        let regex = regex::Regex::new(pattern).map_err(|e| format!("Invalid regex: {}", e))?;
         self.filters.push(FilterRule {
             pattern: pattern.to_string(),
             regex,
@@ -64,7 +62,9 @@ impl LineFilter {
 
         // If there are include filters, line must match at least one
         if has_include_filters {
-            let matches_include = self.filters.iter()
+            let matches_include = self
+                .filters
+                .iter()
                 .filter(|f| f.mode == FilterMode::Include)
                 .any(|f| f.regex.is_match(text));
             if !matches_include {
@@ -73,7 +73,9 @@ impl LineFilter {
         }
 
         // Line must not match any exclude filter
-        let matches_exclude = self.filters.iter()
+        let matches_exclude = self
+            .filters
+            .iter()
             .filter(|f| f.mode == FilterMode::Exclude)
             .any(|f| f.regex.is_match(text));
 
@@ -93,13 +95,16 @@ impl LineFilter {
 
     /// Get filter descriptions for display.
     pub fn descriptions(&self) -> Vec<String> {
-        self.filters.iter().map(|f| {
-            let prefix = match f.mode {
-                FilterMode::Include => "+",
-                FilterMode::Exclude => "-",
-            };
-            format!("{}{}", prefix, f.pattern)
-        }).collect()
+        self.filters
+            .iter()
+            .map(|f| {
+                let prefix = match f.mode {
+                    FilterMode::Include => "+",
+                    FilterMode::Exclude => "-",
+                };
+                format!("{}{}", prefix, f.pattern)
+            })
+            .collect()
     }
 
     /// Remove a filter by index.
@@ -141,8 +146,8 @@ mod tests {
     #[test]
     fn test_combined_filters() {
         let mut filter = LineFilter::new();
-        filter.add_include("\\[.*\\]").unwrap();  // Must have brackets
-        filter.add_exclude("DEBUG").unwrap();       // But not DEBUG
+        filter.add_include("\\[.*\\]").unwrap(); // Must have brackets
+        filter.add_exclude("DEBUG").unwrap(); // But not DEBUG
         assert!(filter.should_display("[INFO] hello"));
         assert!(!filter.should_display("[DEBUG] verbose"));
         assert!(!filter.should_display("no brackets here"));

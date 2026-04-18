@@ -19,8 +19,7 @@ impl Theme {
     }
 
     pub fn status_disconnected() -> Style {
-        Style::default()
-            .fg(Color::Rgb(139, 142, 164))
+        Style::default().fg(Color::Rgb(139, 142, 164))
     }
 
     pub fn status_error() -> Style {
@@ -36,25 +35,21 @@ impl Theme {
     }
 
     pub fn status_baud() -> Style {
-        Style::default()
-            .fg(Color::Rgb(255, 184, 108))
+        Style::default().fg(Color::Rgb(255, 184, 108))
     }
 
     // ── Terminal output ─────────────────────────────────
 
     pub fn output_text() -> Style {
-        Style::default()
-            .fg(Color::Rgb(248, 248, 242))
+        Style::default().fg(Color::Rgb(248, 248, 242))
     }
 
     pub fn timestamp() -> Style {
-        Style::default()
-            .fg(Color::Rgb(98, 114, 164))
+        Style::default().fg(Color::Rgb(98, 114, 164))
     }
 
     pub fn line_ending_indicator() -> Style {
-        Style::default()
-            .fg(Color::Rgb(68, 71, 90))
+        Style::default().fg(Color::Rgb(68, 71, 90))
     }
 
     // ── Log level colors ────────────────────────────────
@@ -66,18 +61,15 @@ impl Theme {
     }
 
     pub fn log_warn() -> Style {
-        Style::default()
-            .fg(Color::Rgb(255, 184, 108))
+        Style::default().fg(Color::Rgb(255, 184, 108))
     }
 
     pub fn log_info() -> Style {
-        Style::default()
-            .fg(Color::Rgb(80, 250, 123))
+        Style::default().fg(Color::Rgb(80, 250, 123))
     }
 
     pub fn log_debug() -> Style {
-        Style::default()
-            .fg(Color::Rgb(139, 142, 164))
+        Style::default().fg(Color::Rgb(139, 142, 164))
     }
 
     // ── Input bar ───────────────────────────────────────
@@ -101,8 +93,7 @@ impl Theme {
     }
 
     pub fn input_prompt_inactive() -> Style {
-        Style::default()
-            .fg(Color::Rgb(98, 114, 164))
+        Style::default().fg(Color::Rgb(98, 114, 164))
     }
 
     // ── Help hints bar ──────────────────────────────────
@@ -122,8 +113,7 @@ impl Theme {
     // ── Port selector ───────────────────────────────────
 
     pub fn popup_border() -> Style {
-        Style::default()
-            .fg(Color::Rgb(189, 147, 249))
+        Style::default().fg(Color::Rgb(189, 147, 249))
     }
 
     pub fn popup_title() -> Style {
@@ -139,20 +129,17 @@ impl Theme {
     }
 
     pub fn popup_item() -> Style {
-        Style::default()
-            .fg(Color::Rgb(200, 200, 220))
+        Style::default().fg(Color::Rgb(200, 200, 220))
     }
 
     pub fn popup_description() -> Style {
-        Style::default()
-            .fg(Color::Rgb(139, 142, 164))
+        Style::default().fg(Color::Rgb(139, 142, 164))
     }
 
     // ── Help overlay ────────────────────────────────────
 
     pub fn help_overlay_border() -> Style {
-        Style::default()
-            .fg(Color::Rgb(139, 142, 164))
+        Style::default().fg(Color::Rgb(139, 142, 164))
     }
 
     pub fn help_overlay_title() -> Style {
@@ -164,13 +151,11 @@ impl Theme {
     // ── Borders ─────────────────────────────────────────
 
     pub fn border() -> Style {
-        Style::default()
-            .fg(Color::Rgb(68, 71, 90))
+        Style::default().fg(Color::Rgb(68, 71, 90))
     }
 
     pub fn border_focused() -> Style {
-        Style::default()
-            .fg(Color::Rgb(189, 147, 249))
+        Style::default().fg(Color::Rgb(189, 147, 249))
     }
 
     // ── General ─────────────────────────────────────────
@@ -186,7 +171,11 @@ impl Theme {
     }
 
     /// Detect log level from line content and return appropriate style.
-    pub fn style_for_line(text: &str) -> Style {
+    pub fn style_for_line(text: &str, color_log_levels: bool) -> Style {
+        if !color_log_levels {
+            return Self::output_text();
+        }
+
         let upper = text.to_uppercase();
         if upper.contains("[ERROR]") || upper.contains("ERROR:") || upper.contains("PANIC") {
             Self::log_error()
@@ -194,7 +183,8 @@ impl Theme {
             Self::log_warn()
         } else if upper.contains("[INFO]") || upper.contains("INFO:") {
             Self::log_info()
-        } else if upper.contains("[DEBUG]") || upper.contains("DEBUG:") || upper.contains("[TRACE]") {
+        } else if upper.contains("[DEBUG]") || upper.contains("DEBUG:") || upper.contains("[TRACE]")
+        {
             Self::log_debug()
         } else {
             Self::output_text()

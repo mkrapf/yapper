@@ -1,7 +1,7 @@
 use serialport::{DataBits, FlowControl, Parity, StopBits};
 
 /// Serial port configuration parameters.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SerialConfig {
     pub baud_rate: u32,
     pub data_bits: DataBits,

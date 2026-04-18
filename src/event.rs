@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::app::App;
 use crate::input::handle_key_event;
@@ -21,11 +21,7 @@ impl EventLoop {
     }
 
     /// Run the event loop until the app signals quit.
-    pub fn run<B: Backend>(
-        &mut self,
-        terminal: &mut Terminal<B>,
-        app: &mut App,
-    ) -> Result<()>
+    pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
     where
         <B as Backend>::Error: Send + Sync + 'static,
     {
@@ -34,7 +30,8 @@ impl EventLoop {
         loop {
             // Drain serial events
             let had_serial = app.poll_serial();
-            if had_serial {
+            let had_tick = app.tick(Instant::now());
+            if had_serial || had_tick {
                 needs_render = true;
             }
 
@@ -88,9 +85,7 @@ impl EventLoop {
                     }
                 }
                 false => {
-                    // Tick expired — check serial and re-render if there's
-                    // a status message timer or reconnect animation
-                    if app.status_message.is_some() || app.is_reconnecting() {
+                    if app.tick(Instant::now()) {
                         needs_render = true;
                     }
                 }

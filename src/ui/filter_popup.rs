@@ -9,7 +9,9 @@ use crate::theme::Theme;
 pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let filter_count = app.filter.count();
     let popup_width = 55.min(area.width.saturating_sub(4));
-    let popup_height = (filter_count as u16 + 10).min(area.height.saturating_sub(4)).max(10);
+    let popup_height = (filter_count as u16 + 10)
+        .min(area.height.saturating_sub(4))
+        .max(10);
     let popup_area = centered_rect(popup_width, popup_height, area);
 
     frame.render_widget(Clear, popup_area);
@@ -48,9 +50,13 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
             };
             let (sigil, pattern) = desc.split_at(1);
             let sigil_style = if sigil == "+" {
-                Style::default().fg(Color::Rgb(80, 250, 123)).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Rgb(80, 250, 123))
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Rgb(255, 85, 85)).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Rgb(255, 85, 85))
+                    .add_modifier(Modifier::BOLD)
             };
             lines.push(Line::from(vec![
                 Span::styled(prefix, style),
@@ -64,9 +70,19 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
 
     // Mode indicator
     let mode_label = if app.filter_mode_is_exclude {
-        Span::styled("[Exclude -] ", Style::default().fg(Color::Rgb(255, 85, 85)).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "[Exclude -] ",
+            Style::default()
+                .fg(Color::Rgb(255, 85, 85))
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
-        Span::styled("[Include +] ", Style::default().fg(Color::Rgb(80, 250, 123)).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "[Include +] ",
+            Style::default()
+                .fg(Color::Rgb(80, 250, 123))
+                .add_modifier(Modifier::BOLD),
+        )
     };
 
     // Input line
@@ -82,10 +98,12 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     // Help
     lines.push(Line::from(vec![
         Span::styled("Enter", Theme::help_key()),
-        Span::styled(": add  ", Theme::popup_item()),
+        Span::styled(": apply  ", Theme::popup_item()),
+        Span::styled("↑/↓", Theme::help_key()),
+        Span::styled(": select  ", Theme::popup_item()),
         Span::styled("Tab", Theme::help_key()),
         Span::styled(": ±mode  ", Theme::popup_item()),
-        Span::styled("d", Theme::help_key()),
+        Span::styled("Del/^D", Theme::help_key()),
         Span::styled(": delete  ", Theme::popup_item()),
         Span::styled("Esc", Theme::help_key()),
         Span::styled(": close", Theme::popup_item()),
@@ -95,9 +113,12 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, inner);
 
     // Position cursor at the input field
-    let input_row = inner.y + (filter_count as u16).min(inner.height.saturating_sub(4))
+    let input_row = inner.y
+        + (filter_count as u16).min(inner.height.saturating_sub(4))
         + if descriptions.is_empty() { 2 } else { 3 };
-    let input_col = inner.x + 5 + if app.filter_mode_is_exclude { 12 } else { 12 }
+    let input_col = inner.x
+        + 5
+        + if app.filter_mode_is_exclude { 12 } else { 12 }
         + app.filter_input.len() as u16;
     if input_row < popup_area.bottom() && input_col < popup_area.right() {
         frame.set_cursor_position((input_col, input_row));

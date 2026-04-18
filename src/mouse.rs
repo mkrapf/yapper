@@ -5,7 +5,7 @@ use crate::app::{App, Mode};
 /// Regions of the UI for click detection.
 /// These are set during rendering and read during mouse handling.
 pub struct LayoutRegions {
-    pub status_bar: (u16, u16, u16, u16),     // x, y, w, h
+    pub status_bar: (u16, u16, u16, u16), // x, y, w, h
     pub terminal_view: (u16, u16, u16, u16),
     pub input_bar: (u16, u16, u16, u16),
 }
@@ -82,40 +82,36 @@ impl TextSelection {
 pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
     match event.kind {
         // ── Scroll wheel ────────────────────────────────
-        MouseEventKind::ScrollUp => {
-            match app.mode {
-                Mode::PortSelect => {
-                    if app.port_select_index > 0 {
-                        app.port_select_index -= 1;
-                    }
-                }
-                Mode::Settings => {
-                    if app.settings_field > 0 {
-                        app.settings_field -= 1;
-                    }
-                }
-                _ => {
-                    app.scroll_up(3);
+        MouseEventKind::ScrollUp => match app.mode {
+            Mode::PortSelect => {
+                if app.port_select_index > 0 {
+                    app.port_select_index -= 1;
                 }
             }
-        }
-        MouseEventKind::ScrollDown => {
-            match app.mode {
-                Mode::PortSelect => {
-                    if app.port_select_index + 1 < app.available_ports.len() {
-                        app.port_select_index += 1;
-                    }
-                }
-                Mode::Settings => {
-                    if app.settings_field < 4 {
-                        app.settings_field += 1;
-                    }
-                }
-                _ => {
-                    app.scroll_down(3);
+            Mode::Settings => {
+                if app.settings_field > 0 {
+                    app.settings_field -= 1;
                 }
             }
-        }
+            _ => {
+                app.scroll_up(3);
+            }
+        },
+        MouseEventKind::ScrollDown => match app.mode {
+            Mode::PortSelect => {
+                if app.port_select_index + 1 < app.available_ports.len() {
+                    app.port_select_index += 1;
+                }
+            }
+            Mode::Settings => {
+                if app.settings_field < 5 {
+                    app.settings_field += 1;
+                }
+            }
+            _ => {
+                app.scroll_down(3);
+            }
+        },
 
         // ── Click ───────────────────────────────────────
         MouseEventKind::Down(MouseButton::Left) => {
@@ -219,7 +215,7 @@ fn handle_port_click(app: &mut App, _col: u16, row: u16) {
 }
 
 fn handle_settings_click(app: &mut App, row: u16) {
-    // Settings popup has 5 fields with spacing. Fields are at rows 3, 5, 7, 9, 11
+    // Settings popup has 6 fields with spacing. Fields are at rows 3, 5, 7, 9, 11, 13
     // relative to the popup top.
     let total_height = app.layout.terminal_view.3 + 4;
     let popup_height = 16.min(total_height - 4);
@@ -231,7 +227,7 @@ fn handle_settings_click(app: &mut App, row: u16) {
         // Fields are at relative positions 0, 2, 4, 6, 8 (with blank lines between)
         if relative % 2 == 0 {
             let field_index = relative / 2;
-            if field_index < 5 {
+            if field_index < 6 {
                 app.settings_field = field_index;
             }
         }
@@ -297,6 +293,7 @@ fn copy_selection(app: &mut App) {
                     &entry.line_ending,
                     entry.is_sent,
                     app.show_timestamps,
+                    &app.timestamp_format,
                     app.show_line_endings,
                 )
             } else {
@@ -309,7 +306,7 @@ fn copy_selection(app: &mut App) {
                 if app.show_timestamps {
                     line.push_str(&format!(
                         "[{}] ",
-                        chrono::Local::now().format("%H:%M:%S%.3f")
+                        chrono::Local::now().format(&app.timestamp_format)
                     ));
                 }
                 line.push_str(partial);
@@ -345,15 +342,13 @@ fn format_entry_for_copy(
     line_ending: &crate::buffer::LineEnding,
     is_sent: bool,
     show_timestamps: bool,
+    timestamp_format: &str,
     show_line_endings: bool,
 ) -> String {
     let mut line = String::new();
 
     if show_timestamps {
-        line.push_str(&format!(
-            "[{}] ",
-            timestamp.format("%H:%M:%S%.3f")
-        ));
+        line.push_str(&format!("[{}] ", timestamp.format(timestamp_format)));
     }
 
     if is_sent {

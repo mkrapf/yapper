@@ -33,11 +33,23 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
 
     let fields = vec![
         ("Baud Rate", format!("◂ {} ▸", config.baud_rate)),
-        ("Data Bits", format!("◂ {} ▸", data_bits_str(config.data_bits))),
+        (
+            "Data Bits",
+            format!("◂ {} ▸", data_bits_str(config.data_bits)),
+        ),
         ("Parity", format!("◂ {} ▸", parity_str(config.parity))),
-        ("Stop Bits", format!("◂ {} ▸", stop_bits_str(config.stop_bits))),
-        ("Flow Ctrl", format!("◂ {} ▸", flow_control_str(config.flow_control))),
-        ("Line End", format!("◂ {} ▸", line_ending_display(&app.line_ending))),
+        (
+            "Stop Bits",
+            format!("◂ {} ▸", stop_bits_str(config.stop_bits)),
+        ),
+        (
+            "Flow Ctrl",
+            format!("◂ {} ▸", flow_control_str(config.flow_control)),
+        ),
+        (
+            "Line End",
+            format!("◂ {} ▸", line_ending_display(&app.line_ending)),
+        ),
     ];
 
     let mut lines = Vec::new();
@@ -77,7 +89,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled("Enter", Theme::help_key()),
         Span::styled(" apply  ", Theme::popup_item()),
         Span::styled("Esc", Theme::help_key()),
-        Span::styled(" cancel", Theme::popup_item()),
+        Span::styled(" restore", Theme::popup_item()),
     ]));
 
     let paragraph = Paragraph::new(lines);

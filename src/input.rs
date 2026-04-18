@@ -76,7 +76,6 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('e') => app.toggle_line_endings(),
         KeyCode::Char('l') => app.toggle_logging(),
 
-
         // Port selector
         KeyCode::Char('p') => app.open_port_selector(),
 
@@ -93,7 +92,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('c') => app.toggle_connection(),
 
         // Help
-        KeyCode::Char('?') => app.mode = Mode::Help,
+        KeyCode::Char('?') => app.open_help(),
 
         // Any other printable char: auto-enter input mode and insert
         KeyCode::Char(c) => {
@@ -173,9 +172,6 @@ fn handle_input_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.open_settings();
         }
-        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.toggle_logging();
-        }
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.input_cursor_home();
         }
@@ -195,8 +191,8 @@ fn handle_search_mode(app: &mut App, key: KeyEvent) {
             app.end_search();
         }
         KeyCode::Enter => {
-            // Confirm search and return to input mode (matches stay highlighted)
-            app.mode = Mode::Input;
+            // Confirm search and restore the previous mode (matches stay highlighted)
+            app.restore_mode();
         }
         KeyCode::Backspace => {
             app.search_backspace();
@@ -223,7 +219,7 @@ fn handle_search_mode(app: &mut App, key: KeyEvent) {
 fn handle_port_select_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => {
-            app.mode = Mode::Input;
+            app.restore_mode();
         }
         KeyCode::Enter => {
             app.connect_selected_port();
@@ -257,7 +253,7 @@ fn handle_port_select_mode(app: &mut App, key: KeyEvent) {
 fn handle_help_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
-            app.mode = Mode::Input;
+            app.restore_mode();
         }
         _ => {}
     }
@@ -266,7 +262,7 @@ fn handle_help_mode(app: &mut App, key: KeyEvent) {
 fn handle_settings_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => {
-            app.mode = Mode::Input;
+            app.cancel_settings();
         }
         KeyCode::Enter => {
             app.apply_settings();
@@ -294,11 +290,11 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
 fn handle_macro_select_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => {
-            app.mode = Mode::Input;
+            app.restore_mode();
         }
         KeyCode::Enter => {
             app.execute_selected_macro();
-            app.mode = Mode::Input;
+            app.restore_mode();
         }
         KeyCode::Up | KeyCode::Char('k') => {
             if app.macro_select_index > 0 {
@@ -318,7 +314,7 @@ fn handle_macro_select_mode(app: &mut App, key: KeyEvent) {
 fn handle_filter_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
-            app.mode = Mode::Input;
+            app.restore_mode();
         }
         KeyCode::Enter => {
             app.submit_filter();
@@ -329,19 +325,24 @@ fn handle_filter_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Backspace => {
             app.filter_input.pop();
         }
-        KeyCode::Char('d') if app.filter_input.is_empty() => {
-            // Delete selected filter (only when not typing)
+        KeyCode::Delete => {
             let count = app.filter.count();
             if count > 0 && app.filter_select_index < count {
                 app.remove_filter(app.filter_select_index);
             }
         }
-        KeyCode::Up | KeyCode::Char('k') if app.filter_input.is_empty() => {
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let count = app.filter.count();
+            if count > 0 && app.filter_select_index < count {
+                app.remove_filter(app.filter_select_index);
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
             if app.filter_select_index > 0 {
                 app.filter_select_index -= 1;
             }
         }
-        KeyCode::Down | KeyCode::Char('j') if app.filter_input.is_empty() => {
+        KeyCode::Down | KeyCode::Char('j') => {
             let count = app.filter.count();
             if app.filter_select_index + 1 < count {
                 app.filter_select_index += 1;

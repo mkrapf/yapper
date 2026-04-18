@@ -15,7 +15,11 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Theme::input_bar()
     };
 
-    let prompt = if app.hex_input_mode { " HEX❯ " } else { " ❯ " };
+    let prompt = if app.hex_input_mode {
+        " HEX❯ "
+    } else {
+        " ❯ "
+    };
     let prompt_len = if app.hex_input_mode { 6u16 } else { 3u16 };
 
     let prompt_style = if app.hex_input_mode {
@@ -39,6 +43,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
             if suggestion.len() > app.input_text.len() {
                 let suffix = &suggestion[app.input_text.len()..];
                 spans.push(Span::styled(suffix, Theme::timestamp()));
+                spans.push(Span::styled("  Tab accept", Theme::help_bar()));
             }
         }
     }
@@ -49,9 +54,6 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
 
     // Place the cursor if in input mode
     if is_active || app.hex_input_mode {
-        frame.set_cursor_position((
-            area.x + prompt_len + app.input_cursor as u16,
-            area.y,
-        ));
+        frame.set_cursor_position((area.x + prompt_len + app.input_cursor as u16, area.y));
     }
 }

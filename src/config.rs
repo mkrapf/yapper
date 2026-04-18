@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 /// Application configuration, loadable from TOML.
@@ -120,7 +122,7 @@ impl Default for LoggingConfig {
         Self {
             auto_log: false,
             log_directory: "~/.local/share/yapper/logs".to_string(),
-            log_format: "raw".to_string(),
+            log_format: "timestamped".to_string(),
         }
     }
 }
@@ -173,6 +175,25 @@ impl AppConfig {
     }
 }
 
+/// Expand a config path, resolving a leading `~/` against the current home
+/// directory. Empty paths are treated as unset.
+pub fn expand_path(path: &str) -> Option<PathBuf> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed == "~" {
+        return dirs::home_dir();
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return dirs::home_dir().map(|home| home.join(rest));
+    }
+
+    Some(PathBuf::from(trimmed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +222,17 @@ mod tests {
         assert!(!config.display.timestamps);
         // Defaults should be preserved for unset fields
         assert_eq!(config.behavior.scrollback_lines, 10000);
+    }
+
+    #[test]
+    fn test_expand_path_with_tilde() {
+        let expanded = expand_path("~/tmp").unwrap();
+        assert!(expanded.ends_with("tmp"));
+        assert!(expanded.is_absolute());
+    }
+
+    #[test]
+    fn test_expand_path_empty_is_none() {
+        assert!(expand_path("   ").is_none());
     }
 }

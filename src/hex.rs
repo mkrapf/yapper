@@ -12,17 +12,9 @@ pub fn format_hex_lines(data: &[u8], offset: usize) -> Vec<HexLine> {
         let chunk_end = (pos + 16).min(data.len());
         let chunk = &data[pos..chunk_end];
 
-        let hex_left: Vec<String> = chunk
-            .iter()
-            .take(8)
-            .map(|b| format!("{:02x}", b))
-            .collect();
+        let hex_left: Vec<String> = chunk.iter().take(8).map(|b| format!("{:02x}", b)).collect();
 
-        let hex_right: Vec<String> = chunk
-            .iter()
-            .skip(8)
-            .map(|b| format!("{:02x}", b))
-            .collect();
+        let hex_right: Vec<String> = chunk.iter().skip(8).map(|b| format!("{:02x}", b)).collect();
 
         let ascii: String = chunk
             .iter()
@@ -52,8 +44,8 @@ pub fn format_hex_lines(data: &[u8], offset: usize) -> Vec<HexLine> {
 /// A single line in the hex view.
 pub struct HexLine {
     pub offset: usize,
-    pub hex_left: String,   // first 8 bytes
-    pub hex_right: String,  // next 8 bytes
+    pub hex_left: String,  // first 8 bytes
+    pub hex_right: String, // next 8 bytes
     pub ascii: String,
     pub byte_count: usize,
 }
@@ -64,13 +56,7 @@ impl HexLine {
         // Pad hex sections to fixed width
         let left = format!("{:<23}", self.hex_left);
         let right = format!("{:<23}", self.hex_right);
-        format!(
-            "{:08x}  {} {} |{}|",
-            self.offset,
-            left,
-            right,
-            self.ascii
-        )
+        format!("{:08x}  {} {} |{}|", self.offset, left, right, self.ascii)
     }
 }
 
@@ -80,7 +66,7 @@ mod tests {
 
     #[test]
     fn test_format_full_line() {
-        let data = b"Hello, World!!!!";  // exactly 16 bytes
+        let data = b"Hello, World!!!!"; // exactly 16 bytes
         let lines = format_hex_lines(data, 0);
         assert_eq!(lines.len(), 1);
         let line = &lines[0];

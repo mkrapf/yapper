@@ -9,7 +9,9 @@ use crate::theme::Theme;
 pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     // Center the popup
     let popup_width = 60.min(area.width.saturating_sub(4));
-    let popup_height = (app.available_ports.len() as u16 + 4).min(area.height.saturating_sub(4));
+    let popup_height = (app.available_ports.len() as u16 + 6)
+        .min(area.height.saturating_sub(4))
+        .max(8);
     let popup_area = centered_rect(popup_width, popup_height, area);
 
     // Clear the area behind the popup
@@ -30,8 +32,13 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
                 Theme::status_disconnected(),
             )),
             Line::from(Span::styled(
-                "Press 'r' to refresh",
+                "Press r to refresh or Esc to return",
                 Theme::help_bar(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Linux: check USB cable, power, and dialout/uucp permissions",
+                Theme::popup_description(),
             )),
         ])
         .block(block);

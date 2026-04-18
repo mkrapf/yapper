@@ -10,7 +10,9 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let macros = app.macros.list();
 
     let popup_width = 55.min(area.width.saturating_sub(4));
-    let popup_height = (macros.len() as u16 + 5).min(area.height.saturating_sub(4)).max(6);
+    let popup_height = (macros.len() as u16 + 5)
+        .min(area.height.saturating_sub(4))
+        .max(6);
     let popup_area = centered_rect(popup_width, popup_height, area);
 
     frame.render_widget(Clear, popup_area);

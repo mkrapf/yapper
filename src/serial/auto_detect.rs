@@ -2,7 +2,9 @@ use std::io::Read;
 use std::time::Duration;
 
 /// Common baud rates to try, ordered by most likely.
-const DETECT_RATES: &[u32] = &[115200, 9600, 57600, 38400, 19200, 230400, 460800, 921600, 4800, 2400, 1200];
+const DETECT_RATES: &[u32] = &[
+    115200, 9600, 57600, 38400, 19200, 230400, 460800, 921600, 4800, 2400, 1200,
+];
 
 /// Try to auto-detect the baud rate for a serial port.
 ///
@@ -35,7 +37,8 @@ pub fn auto_detect_baud(port_name: &str) -> Option<u32> {
                 }
 
                 if all_bytes.len() >= 4 {
-                    let printable = all_bytes.iter()
+                    let printable = all_bytes
+                        .iter()
                         .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
                         .count();
                     let score = printable as f64 / all_bytes.len() as f64;

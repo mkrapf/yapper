@@ -37,11 +37,7 @@ pub struct SerialConnection {
 
 impl SerialConnection {
     /// Open a serial port and start the reader + writer threads.
-    pub fn open(
-        port_name: &str,
-        config: &SerialConfig,
-        tx: Sender<SerialEvent>,
-    ) -> Result<Self> {
+    pub fn open(port_name: &str, config: &SerialConfig, tx: Sender<SerialEvent>) -> Result<Self> {
         let port = serialport::new(port_name, config.baud_rate)
             .data_bits(config.data_bits)
             .parity(config.parity)
@@ -55,7 +51,8 @@ impl SerialConnection {
         let tx_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         // Clone port for reader thread
-        let reader_port = port.try_clone()
+        let reader_port = port
+            .try_clone()
             .context("Failed to clone serial port for reader thread")?;
         let reader_stop = stop_flag.clone();
 
@@ -104,7 +101,10 @@ impl SerialConnection {
 
             match port.read(&mut buf) {
                 Ok(n) if n > 0 => {
-                    if tx.send(SerialEvent::Data(buf[..n].to_vec(), Instant::now())).is_err() {
+                    if tx
+                        .send(SerialEvent::Data(buf[..n].to_vec(), Instant::now()))
+                        .is_err()
+                    {
                         break; // Main thread dropped the receiver
                     }
                 }
@@ -112,8 +112,9 @@ impl SerialConnection {
                 Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
                     // Normal timeout, continue
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::BrokenPipe
-                    || e.kind() == std::io::ErrorKind::PermissionDenied =>
+                Err(ref e)
+                    if e.kind() == std::io::ErrorKind::BrokenPipe
+                        || e.kind() == std::io::ErrorKind::PermissionDenied =>
                 {
                     let _ = tx.send(SerialEvent::Disconnected);
                     break;
@@ -137,15 +138,13 @@ impl SerialConnection {
 
         while !stop.load(Ordering::Relaxed) {
             match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(data) => {
-                    match port.write_all(&data) {
-                        Ok(_) => {
-                            let _ = port.flush();
-                            tx_count.fetch_add(data.len() as u64, Ordering::Relaxed);
-                        }
-                        Err(_) => break,
+                Ok(data) => match port.write_all(&data) {
+                    Ok(_) => {
+                        let _ = port.flush();
+                        tx_count.fetch_add(data.len() as u64, Ordering::Relaxed);
                     }
-                }
+                    Err(_) => break,
+                },
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
