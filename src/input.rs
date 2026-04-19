@@ -84,6 +84,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 
         // Macro selector
         KeyCode::Char('m') => app.open_macro_selector(),
+        KeyCode::Char('M') => app.rerun_last_macro(),
 
         // Filter popup
         KeyCode::Char('f') => app.open_filter_popup(),
@@ -172,6 +173,9 @@ fn handle_input_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.open_settings();
         }
+        KeyCode::Char('M') => {
+            app.rerun_last_macro();
+        }
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.input_cursor_home();
         }
@@ -255,6 +259,10 @@ fn handle_help_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
             app.restore_mode();
         }
+        KeyCode::Up | KeyCode::Char('k') => app.scroll_help_up(1),
+        KeyCode::Down | KeyCode::Char('j') => app.scroll_help_down(1),
+        KeyCode::PageUp => app.scroll_help_up(10),
+        KeyCode::PageDown => app.scroll_help_down(10),
         _ => {}
     }
 }
@@ -295,6 +303,9 @@ fn handle_macro_select_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => {
             app.execute_selected_macro();
             app.restore_mode();
+        }
+        KeyCode::Char('r') => {
+            app.reload_macros();
         }
         KeyCode::Up | KeyCode::Char('k') => {
             if app.macro_select_index > 0 {

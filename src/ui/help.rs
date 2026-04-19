@@ -6,7 +6,7 @@ use crate::app::App;
 use crate::theme::Theme;
 
 /// Render the help overlay popup.
-pub fn render(_app: &App, frame: &mut Frame, area: Rect) {
+pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     let popup_width = 78.min(area.width.saturating_sub(4));
     let popup_height = 38.min(area.height.saturating_sub(4));
     let popup_area = centered_rect(popup_width, popup_height, area);
@@ -38,6 +38,7 @@ pub fn render(_app: &App, frame: &mut Frame, area: Rect) {
         key_line("p", "Open port selector"),
         key_line("s", "Open UART settings"),
         key_line("m", "Open macro selector"),
+        key_line("M", "Rerun the last started macro"),
         key_line("f", "Open filters"),
         key_line("c", "Connect/disconnect"),
         key_line("?", "Toggle this help"),
@@ -51,12 +52,15 @@ pub fn render(_app: &App, frame: &mut Frame, area: Rect) {
         key_line("Ctrl+W/U", "Delete word / clear line"),
         key_line("Ctrl+H", "Toggle hex input"),
         key_line("Ctrl+P/S", "Ports / settings"),
-        key_line("F1-F8", "Quick send frequent commands"),
+        key_line("F1-F8", "Quick send recent commands"),
+        key_line("M", "Rerun the last started macro"),
         Line::from(""),
         section_header("Search Mode"),
         key_line("Enter", "Confirm search"),
         key_line("↑/↓", "Previous/next match"),
         key_line("Ctrl+N/P", "Next/previous match"),
+        key_line("* / ?", "Wildcard any-run / single-char"),
+        key_line("\\*  \\?  \\\\", "Escape wildcard characters"),
         key_line("Esc", "Cancel search"),
         Line::from(""),
         section_header("Port Selector"),
@@ -73,13 +77,17 @@ pub fn render(_app: &App, frame: &mut Frame, area: Rect) {
         key_line("Enter", "Apply settings"),
         key_line("Esc or q", "Cancel and restore previous values"),
         Line::from(""),
-        section_header("Macros and Filters"),
-        key_line("m", "Open macro selector"),
+        section_header("Macro Selector"),
         key_line("Macro Enter", "Run selected macro"),
-        key_line("f", "Open regex filters"),
+        key_line("r", "Reload macros.toml from disk"),
+        key_line("Esc", "Close selector"),
+        Line::from(""),
+        section_header("Filters"),
+        key_line("f", "Open filters"),
         key_line("Filter Tab", "Toggle include/exclude mode"),
         key_line("Filter Del or Ctrl+D", "Delete selected filter"),
         key_line("Filter Enter", "Apply filter and return"),
+        key_line("↑/↓", "Move selected filter"),
         Line::from(""),
         section_header("Mouse"),
         key_line("Wheel", "Scroll output or navigate popups"),
@@ -95,10 +103,22 @@ pub fn render(_app: &App, frame: &mut Frame, area: Rect) {
         ),
         key_line("↑N", "Scrolled N lines away from the bottom"),
         key_line("↵ 42ms", "Last command response time"),
+        Line::from(""),
+        section_header("Tips"),
+        key_line("Per-port settings", "Each port remembers serial settings"),
+        key_line("Quick send", "F1-F8 stay stable until you manually send"),
+        key_line("Help scroll", "Use j/k, arrows, or PgUp/PgDn"),
     ];
 
-    let paragraph = Paragraph::new(help_lines).block(block);
-    frame.render_widget(paragraph, popup_area);
+    let inner = block.inner(popup_area);
+    let visible_lines = inner.height as usize;
+    let max_scroll = help_lines.len().saturating_sub(visible_lines) as u16;
+    app.set_help_scroll_max(max_scroll);
+
+    frame.render_widget(block, popup_area);
+
+    let paragraph = Paragraph::new(help_lines).scroll((app.help_scroll, 0));
+    frame.render_widget(paragraph, inner);
 }
 
 fn section_header(title: &str) -> Line<'static> {

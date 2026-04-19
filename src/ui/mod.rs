@@ -14,13 +14,29 @@ use ratatui::text::{Line, Span};
 use crate::app::{App, Mode};
 use crate::theme::Theme;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WidthMode {
+    Full,
+    Compact,
+    Minimal,
+}
+
+pub(crate) fn width_mode(width: u16) -> WidthMode {
+    match width {
+        0..=79 => WidthMode::Minimal,
+        80..=99 => WidthMode::Compact,
+        _ => WidthMode::Full,
+    }
+}
+
 /// Render the entire application UI.
 pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
+    let layout_mode = width_mode(area.width);
 
     // Layout depends on whether search bar and quicksend bar are visible
     let has_search = app.mode == Mode::Search || !app.search.query.is_empty();
-    let has_quicksend = !app.quicksend.is_empty();
+    let has_quicksend = !app.quicksend.is_empty() && layout_mode != WidthMode::Minimal;
 
     let mut constraints = vec![
         Constraint::Length(1), // Status bar
@@ -45,7 +61,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     // Status bar
     let r = chunks[idx];
     app.layout.status_bar = (r.x, r.y, r.width, r.height);
-    status_bar::render(app, frame, chunks[idx]);
+    status_bar::render(app, frame, chunks[idx], layout_mode);
     idx += 1;
 
     // Terminal view
@@ -56,7 +72,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     // Quick-send bar
     if has_quicksend {
-        quicksend_bar::render(app, frame, chunks[idx]);
+        quicksend_bar::render(app, frame, chunks[idx], layout_mode);
         idx += 1;
     }
 
@@ -73,7 +89,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     idx += 1;
 
     // Help hints
-    render_help_hints(app, frame, chunks[idx]);
+    render_help_hints(app, frame, chunks[idx], layout_mode);
 
     // Overlays
     match app.mode {
@@ -125,115 +141,134 @@ fn render_search_bar(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 /// Render the bottom help hints bar.
-fn render_help_hints(app: &App, frame: &mut Frame, area: Rect) {
-    let hints = match app.mode {
-        Mode::Normal => vec![
-            Span::styled("i", Theme::help_key()),
-            Span::styled(": input  ", Theme::help_bar()),
-            Span::styled("j/k", Theme::help_key()),
-            Span::styled(": scroll  ", Theme::help_bar()),
-            Span::styled("/", Theme::help_key()),
-            Span::styled(": search  ", Theme::help_bar()),
-            Span::styled("h", Theme::help_key()),
-            Span::styled(": hex  ", Theme::help_bar()),
-            Span::styled("p", Theme::help_key()),
-            Span::styled(": ports  ", Theme::help_bar()),
-            Span::styled("s", Theme::help_key()),
-            Span::styled(": settings  ", Theme::help_bar()),
-            Span::styled("m", Theme::help_key()),
-            Span::styled(": macros  ", Theme::help_bar()),
-            Span::styled("f", Theme::help_key()),
-            Span::styled(": filters  ", Theme::help_bar()),
-            Span::styled("l", Theme::help_key()),
-            Span::styled(": log  ", Theme::help_bar()),
-            Span::styled("?", Theme::help_key()),
-            Span::styled(": help", Theme::help_bar()),
+fn render_help_hints(app: &App, frame: &mut Frame, area: Rect, layout_mode: WidthMode) {
+    let hints: Vec<(&str, &str)> = match (app.mode, layout_mode) {
+        (Mode::Normal, WidthMode::Full) => vec![
+            ("i", "input"),
+            ("j/k", "scroll"),
+            ("/", "search"),
+            ("p", "ports"),
+            ("s", "settings"),
+            ("m", "macros"),
+            ("M", "rerun"),
+            ("f", "filters"),
+            ("?", "help"),
         ],
-        Mode::Input => vec![
-            Span::styled("Enter", Theme::help_key()),
-            Span::styled(": send  ", Theme::help_bar()),
-            Span::styled("↑/↓", Theme::help_key()),
-            Span::styled(": history  ", Theme::help_bar()),
-            Span::styled("Tab", Theme::help_key()),
-            Span::styled(": accept  ", Theme::help_bar()),
-            Span::styled("PgUp/Dn", Theme::help_key()),
-            Span::styled(": scroll  ", Theme::help_bar()),
-            Span::styled("^P", Theme::help_key()),
-            Span::styled(": ports  ", Theme::help_bar()),
-            Span::styled("^S", Theme::help_key()),
-            Span::styled(": settings  ", Theme::help_bar()),
-            Span::styled("^H", Theme::help_key()),
-            Span::styled(": hex in  ", Theme::help_bar()),
-            Span::styled("Esc", Theme::help_key()),
-            Span::styled(": browse", Theme::help_bar()),
+        (Mode::Normal, WidthMode::Compact) => vec![
+            ("i", "input"),
+            ("/", "search"),
+            ("p", "ports"),
+            ("m", "macro"),
+            ("M", "rerun"),
+            ("?", "help"),
         ],
-        Mode::Search => vec![
-            Span::styled("Enter", Theme::help_key()),
-            Span::styled(": confirm  ", Theme::help_bar()),
-            Span::styled("↑/↓", Theme::help_key()),
-            Span::styled(": prev/next  ", Theme::help_bar()),
-            Span::styled("Esc", Theme::help_key()),
-            Span::styled(": cancel", Theme::help_bar()),
+        (Mode::Normal, WidthMode::Minimal) => {
+            vec![("i", "input"), ("/", "find"), ("p", "ports"), ("?", "help")]
+        }
+        (Mode::Input, WidthMode::Full) => vec![
+            ("Enter", "send"),
+            ("↑/↓", "history"),
+            ("Tab", "accept"),
+            ("F1-F8", "quick"),
+            ("^P", "ports"),
+            ("^S", "settings"),
+            ("^H", "hex"),
+            ("M", "rerun"),
+            ("Esc", "browse"),
         ],
-        Mode::PortSelect => vec![
-            Span::styled("Enter", Theme::help_key()),
-            Span::styled(": connect  ", Theme::help_bar()),
-            Span::styled("j/k", Theme::help_key()),
-            Span::styled(": navigate  ", Theme::help_bar()),
-            Span::styled("a", Theme::help_key()),
-            Span::styled(": auto-baud  ", Theme::help_bar()),
-            Span::styled("r", Theme::help_key()),
-            Span::styled(": refresh  ", Theme::help_bar()),
-            Span::styled("Esc", Theme::help_key()),
-            Span::styled(": close", Theme::help_bar()),
+        (Mode::Input, WidthMode::Compact) => vec![
+            ("Enter", "send"),
+            ("Tab", "accept"),
+            ("F1-F8", "quick"),
+            ("M", "rerun"),
+            ("Esc", "browse"),
         ],
-        Mode::Settings => vec![
-            Span::styled("↑/↓", Theme::help_key()),
-            Span::styled(": select  ", Theme::help_bar()),
-            Span::styled("←/→", Theme::help_key()),
-            Span::styled(": change  ", Theme::help_bar()),
-            Span::styled("Enter", Theme::help_key()),
-            Span::styled(": apply  ", Theme::help_bar()),
-            Span::styled("Esc", Theme::help_key()),
-            Span::styled(": cancel", Theme::help_bar()),
+        (Mode::Input, WidthMode::Minimal) => {
+            vec![("Enter", "send"), ("Tab", "accept"), ("Esc", "back")]
+        }
+        (Mode::Search, WidthMode::Full | WidthMode::Compact) => vec![
+            ("Enter", "confirm"),
+            ("↑/↓", "prev/next"),
+            ("*", "wildcard"),
+            ("Esc", "close"),
         ],
-        Mode::Help => vec![
-            Span::styled("Esc", Theme::help_key()),
-            Span::styled(": close help", Theme::help_bar()),
+        (Mode::Search, WidthMode::Minimal) => {
+            vec![("Enter", "ok"), ("↑/↓", "move"), ("Esc", "close")]
+        }
+        (Mode::PortSelect, WidthMode::Full) => vec![
+            ("Enter", "connect"),
+            ("j/k", "move"),
+            ("a", "auto-baud"),
+            ("r", "refresh"),
+            ("Esc", "close"),
         ],
-        Mode::MacroSelect => vec![
-            Span::styled("Enter", Theme::help_key()),
-            Span::styled(": run  ", Theme::help_bar()),
-            Span::styled("j/k", Theme::help_key()),
-            Span::styled(": navigate  ", Theme::help_bar()),
-            Span::styled("Esc", Theme::help_key()),
-            Span::styled(": close", Theme::help_bar()),
+        (Mode::PortSelect, WidthMode::Compact | WidthMode::Minimal) => vec![
+            ("Enter", "connect"),
+            ("a", "baud"),
+            ("r", "refresh"),
+            ("Esc", "close"),
         ],
-        Mode::Filter => vec![
-            Span::styled("Enter", Theme::help_key()),
-            Span::styled(": apply  ", Theme::help_bar()),
-            Span::styled("↑/↓", Theme::help_key()),
-            Span::styled(": select  ", Theme::help_bar()),
-            Span::styled("Tab", Theme::help_key()),
-            Span::styled(": ±mode  ", Theme::help_bar()),
-            Span::styled("Del/^D", Theme::help_key()),
-            Span::styled(": delete  ", Theme::help_bar()),
-            Span::styled("Esc", Theme::help_key()),
-            Span::styled(": close", Theme::help_bar()),
+        (Mode::Settings, WidthMode::Full | WidthMode::Compact) => vec![
+            ("↑/↓", "field"),
+            ("←/→", "change"),
+            ("Enter", "apply"),
+            ("Esc", "cancel"),
         ],
+        (Mode::Settings, WidthMode::Minimal) => {
+            vec![("←/→", "change"), ("Enter", "apply"), ("Esc", "cancel")]
+        }
+        (Mode::Help, WidthMode::Full | WidthMode::Compact) => {
+            vec![("j/k", "scroll"), ("PgUp/Dn", "page"), ("Esc", "close")]
+        }
+        (Mode::Help, WidthMode::Minimal) => vec![("↑/↓", "scroll"), ("Esc", "close")],
+        (Mode::MacroSelect, WidthMode::Full | WidthMode::Compact) => vec![
+            ("Enter", "run"),
+            ("r", "reload"),
+            ("j/k", "move"),
+            ("Esc", "close"),
+        ],
+        (Mode::MacroSelect, WidthMode::Minimal) => {
+            vec![("Enter", "run"), ("r", "reload"), ("Esc", "close")]
+        }
+        (Mode::Filter, WidthMode::Full | WidthMode::Compact) => vec![
+            ("Enter", "apply"),
+            ("↑/↓", "select"),
+            ("Tab", "+/-"),
+            ("Del/^D", "delete"),
+            ("Esc", "close"),
+        ],
+        (Mode::Filter, WidthMode::Minimal) => {
+            vec![("Enter", "apply"), ("Del", "drop"), ("Esc", "close")]
+        }
     };
 
     // Byte counters + logging indicator
     let rx = format_bytes(app.total_rx_bytes());
     let tx = format_bytes(app.total_tx_bytes());
-    let mut prefix = format!(" RX: {}  TX: {}", rx, tx);
+    let mut prefix = match layout_mode {
+        WidthMode::Full => format!(" RX: {}  TX: {}", rx, tx),
+        WidthMode::Compact => format!(" RX {}  TX {}", rx, tx),
+        WidthMode::Minimal => String::new(),
+    };
     if app.logger.is_active {
-        prefix.push_str("  ●REC");
+        if !prefix.is_empty() {
+            prefix.push_str("  ");
+        }
+        prefix.push_str("●REC");
     }
-    prefix.push_str(" │ ");
+    if !prefix.is_empty() {
+        prefix.push_str(" │ ");
+    }
 
     let mut line_spans = vec![Span::styled(prefix, Theme::help_bar())];
-    line_spans.extend(hints);
+    for (index, (key, label)) in hints.iter().enumerate() {
+        if index > 0 {
+            line_spans.push(Span::styled("  ", Theme::help_bar()));
+        }
+        line_spans.push(Span::styled(*key, Theme::help_key()));
+        line_spans.push(Span::styled(": ", Theme::help_bar()));
+        line_spans.push(Span::styled(*label, Theme::help_bar()));
+    }
 
     let line = Line::from(line_spans);
     let paragraph = ratatui::widgets::Paragraph::new(line).style(Theme::help_bar());
@@ -247,5 +282,20 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1}KB", bytes as f64 / 1024.0)
     } else {
         format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{width_mode, WidthMode};
+
+    #[test]
+    fn test_width_mode_thresholds() {
+        assert_eq!(width_mode(120), WidthMode::Full);
+        assert_eq!(width_mode(100), WidthMode::Full);
+        assert_eq!(width_mode(99), WidthMode::Compact);
+        assert_eq!(width_mode(80), WidthMode::Compact);
+        assert_eq!(width_mode(79), WidthMode::Minimal);
+        assert_eq!(width_mode(60), WidthMode::Minimal);
     }
 }

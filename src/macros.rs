@@ -90,6 +90,11 @@ impl MacroManager {
         }
     }
 
+    /// Reload macros from disk, preserving the current set if parsing fails.
+    pub fn reload(&mut self) {
+        self.load();
+    }
+
     /// Save macros to file.
     fn save(&self) {
         let path = match &self.file_path {

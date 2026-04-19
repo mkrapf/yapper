@@ -10,6 +10,13 @@ pub struct Search {
     pub current_match: Option<usize>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PatternToken {
+    Literal(char),
+    AnyOne,
+    AnyMany,
+}
+
 impl Search {
     pub fn new() -> Self {
         Self {
@@ -53,10 +60,29 @@ impl Search {
         }
 
         let query_lower = self.query.to_lowercase();
+        let (tokens, has_wildcards) = parse_pattern(&query_lower);
+        let literal_query = if has_wildcards {
+            None
+        } else {
+            Some(
+                tokens
+                    .iter()
+                    .filter_map(|token| match token {
+                        PatternToken::Literal(ch) => Some(*ch),
+                        _ => None,
+                    })
+                    .collect::<String>(),
+            )
+        };
 
         for i in 0..buffer.len() {
             if let Some(entry) = buffer.get(i) {
-                if entry.text.to_lowercase().contains(&query_lower) {
+                let text = entry.text.to_lowercase();
+                let is_match = match &literal_query {
+                    Some(query) => text.contains(query),
+                    None => wildcard_matches(&text, &tokens),
+                };
+                if is_match {
                     self.matches.push(i);
                 }
             }
@@ -131,6 +157,72 @@ impl Search {
             format!("{}/{}", pos, self.matches.len())
         }
     }
+}
+
+fn parse_pattern(query: &str) -> (Vec<PatternToken>, bool) {
+    let mut tokens = Vec::new();
+    let mut chars = query.chars().peekable();
+    let mut has_wildcards = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => match chars.peek().copied() {
+                Some(next @ ('*' | '?' | '\\')) => {
+                    chars.next();
+                    tokens.push(PatternToken::Literal(next));
+                }
+                Some(_) => tokens.push(PatternToken::Literal('\\')),
+                None => tokens.push(PatternToken::Literal('\\')),
+            },
+            '*' => {
+                has_wildcards = true;
+                if !matches!(tokens.last(), Some(PatternToken::AnyMany)) {
+                    tokens.push(PatternToken::AnyMany);
+                }
+            }
+            '?' => {
+                has_wildcards = true;
+                tokens.push(PatternToken::AnyOne);
+            }
+            _ => tokens.push(PatternToken::Literal(ch)),
+        }
+    }
+
+    (tokens, has_wildcards)
+}
+
+fn wildcard_matches(text: &str, tokens: &[PatternToken]) -> bool {
+    let mut pattern = Vec::with_capacity(tokens.len() + 2);
+    pattern.push(PatternToken::AnyMany);
+    pattern.extend_from_slice(tokens);
+    pattern.push(PatternToken::AnyMany);
+    wildcard_matches_anchored(text, &pattern)
+}
+
+fn wildcard_matches_anchored(text: &str, pattern: &[PatternToken]) -> bool {
+    let text_chars: Vec<char> = text.chars().collect();
+    let mut previous = vec![false; pattern.len() + 1];
+    previous[0] = true;
+
+    for j in 1..=pattern.len() {
+        if pattern[j - 1] == PatternToken::AnyMany {
+            previous[j] = previous[j - 1];
+        }
+    }
+
+    for ch in text_chars {
+        let mut current = vec![false; pattern.len() + 1];
+        for j in 1..=pattern.len() {
+            current[j] = match pattern[j - 1] {
+                PatternToken::Literal(expected) => previous[j - 1] && expected == ch,
+                PatternToken::AnyOne => previous[j - 1],
+                PatternToken::AnyMany => current[j - 1] || previous[j],
+            };
+        }
+        previous = current;
+    }
+
+    previous[pattern.len()]
 }
 
 #[cfg(test)]
@@ -211,5 +303,48 @@ mod tests {
         assert_eq!(search.match_status(), "2/2");
         search.prev_match();
         assert_eq!(search.match_status(), "1/2");
+    }
+
+    #[test]
+    fn test_search_wildcards() {
+        let buf = make_buffer(&["err abc 42", "warn", "error 42"]);
+        let mut search = Search::new();
+        search.query = "err*42".to_string();
+        search.execute(&buf);
+
+        assert_eq!(search.matches, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_search_question_mark_wildcard() {
+        let buf = make_buffer(&["AT+CWJAP", "AT+CW1AP", "AT+CW12AP"]);
+        let mut search = Search::new();
+        search.query = "AT+CW?AP".to_string();
+        search.execute(&buf);
+
+        assert_eq!(search.matches, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_search_escaped_wildcards_and_trailing_backslash() {
+        let buf = make_buffer(&["literal *", "path\\", "plain"]);
+        let mut search = Search::new();
+        search.query = "\\*".to_string();
+        search.execute(&buf);
+        assert_eq!(search.matches, vec![0]);
+
+        search.query = "\\".to_string();
+        search.execute(&buf);
+        assert_eq!(search.matches, vec![1]);
+    }
+
+    #[test]
+    fn test_search_is_unanchored_for_wildcards() {
+        let buf = make_buffer(&["prefix err xyz 42 suffix", "no match"]);
+        let mut search = Search::new();
+        search.query = "err*42".to_string();
+        search.execute(&buf);
+
+        assert_eq!(search.matches, vec![0]);
     }
 }

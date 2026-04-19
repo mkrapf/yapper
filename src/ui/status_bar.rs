@@ -4,9 +4,10 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::{App, ConnectionState};
 use crate::theme::Theme;
+use crate::ui::WidthMode;
 
 /// Render the status bar at the top of the screen.
-pub fn render(app: &App, frame: &mut Frame, area: Rect) {
+pub fn render(app: &App, frame: &mut Frame, area: Rect, layout_mode: WidthMode) {
     let mut spans = vec![
         Span::styled(" yapper ", Theme::title()),
         Span::styled("── ", Theme::status_bar()),
@@ -18,40 +19,79 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     } else {
         match &app.connection_state {
             ConnectionState::Connected(port) => {
-                spans.push(Span::styled(port.as_str(), Theme::status_port_name()));
-                spans.push(Span::styled(" @ ", Theme::status_bar()));
-                spans.push(Span::styled(
-                    app.serial_config.summary(),
-                    Theme::status_baud(),
-                ));
-                spans.push(Span::styled("  ▸ ", Theme::status_bar()));
-                spans.push(Span::styled("Connected", Theme::status_connected()));
-                spans.push(Span::styled(" ◂", Theme::status_bar()));
-                // Show last response time
-                if let Some(rt) = app.last_response_time {
-                    let ms = rt.as_millis();
-                    let timing = if ms < 1000 {
-                        format!("  ↵ {}ms", ms)
-                    } else {
-                        format!("  ↵ {:.1}s", rt.as_secs_f64())
-                    };
-                    spans.push(Span::styled(timing, Theme::status_baud()));
+                let port = truncate(port, port_budget(area.width, layout_mode));
+                spans.push(Span::styled(port, Theme::status_port_name()));
+                match layout_mode {
+                    WidthMode::Full => {
+                        spans.push(Span::styled(" @ ", Theme::status_bar()));
+                        spans.push(Span::styled(
+                            app.serial_config.summary(),
+                            Theme::status_baud(),
+                        ));
+                        spans.push(Span::styled("  ▸ ", Theme::status_bar()));
+                        spans.push(Span::styled("Connected", Theme::status_connected()));
+                        spans.push(Span::styled(" ◂", Theme::status_bar()));
+                        if let Some(rt) = app.last_response_time {
+                            spans.push(Span::styled(
+                                format!("  ↵ {}", format_duration(rt)),
+                                Theme::status_baud(),
+                            ));
+                        }
+                    }
+                    WidthMode::Compact => {
+                        spans.push(Span::styled("  ", Theme::status_bar()));
+                        spans.push(Span::styled(
+                            app.serial_config.summary(),
+                            Theme::status_baud(),
+                        ));
+                        spans.push(Span::styled("  ", Theme::status_bar()));
+                        spans.push(Span::styled("Connected", Theme::status_connected()));
+                    }
+                    WidthMode::Minimal => {
+                        spans.push(Span::styled("  ", Theme::status_bar()));
+                        spans.push(Span::styled("Connected", Theme::status_connected()));
+                    }
                 }
             }
             ConnectionState::Disconnected => {
-                spans.push(Span::styled(
-                    "No port selected",
-                    Theme::status_disconnected(),
-                ));
-                spans.push(Span::styled("  ▸ ", Theme::status_bar()));
+                let label = match layout_mode {
+                    WidthMode::Full => "No port selected",
+                    WidthMode::Compact => "No port",
+                    WidthMode::Minimal => "",
+                };
+                if !label.is_empty() {
+                    spans.push(Span::styled(label, Theme::status_disconnected()));
+                    spans.push(Span::styled("  ", Theme::status_bar()));
+                }
                 spans.push(Span::styled("Disconnected", Theme::status_disconnected()));
-                spans.push(Span::styled(" ◂", Theme::status_bar()));
             }
             ConnectionState::Reconnecting(port) => {
-                spans.push(Span::styled(port.as_str(), Theme::status_port_name()));
-                spans.push(Span::styled("  ▸ ", Theme::status_bar()));
-                spans.push(Span::styled("Reconnecting...", Theme::status_baud()));
-                spans.push(Span::styled(" ◂", Theme::status_bar()));
+                let port = truncate(port, port_budget(area.width, layout_mode));
+                let (attempt, remaining) = app
+                    .reconnect_status(std::time::Instant::now())
+                    .unwrap_or((1, std::time::Duration::ZERO));
+                spans.push(Span::styled(port, Theme::status_port_name()));
+                spans.push(Span::styled("  ", Theme::status_bar()));
+                match layout_mode {
+                    WidthMode::Full => {
+                        spans.push(Span::styled(
+                            format!("Reconnect #{} in {}", attempt, format_duration(remaining)),
+                            Theme::status_baud(),
+                        ));
+                    }
+                    WidthMode::Compact => {
+                        spans.push(Span::styled(
+                            format!("Retry #{} {}", attempt, format_duration(remaining)),
+                            Theme::status_baud(),
+                        ));
+                    }
+                    WidthMode::Minimal => {
+                        spans.push(Span::styled(
+                            format!("Retry {}", format_duration(remaining)),
+                            Theme::status_baud(),
+                        ));
+                    }
+                }
             }
             ConnectionState::Error(msg) => {
                 spans.push(Span::styled("Error: ", Theme::status_error()));
@@ -103,5 +143,22 @@ fn truncate(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         format!("{}…", &s[..max_len.saturating_sub(1)])
+    }
+}
+
+fn port_budget(width: u16, mode: WidthMode) -> usize {
+    match mode {
+        WidthMode::Full => width.saturating_sub(45) as usize,
+        WidthMode::Compact => width.saturating_sub(28) as usize,
+        WidthMode::Minimal => width.saturating_sub(20) as usize,
+    }
+    .max(8)
+}
+
+fn format_duration(duration: std::time::Duration) -> String {
+    if duration.as_millis() >= 1000 {
+        format!("{:.1}s", duration.as_secs_f64())
+    } else {
+        format!("{}ms", duration.as_millis())
     }
 }

@@ -3,7 +3,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crate::buffer::ScrollbackBuffer;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, DefaultsConfig};
 use crate::filter::LineFilter;
 use crate::history::CommandHistory;
 use crate::logging::SessionLogger;
@@ -64,6 +64,15 @@ struct PendingMacroCommand {
     ready_at: Instant,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SendSource {
+    Manual,
+    Quicksend,
+    Macro,
+}
+
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(10);
+
 /// Central application state.
 pub struct App {
     /// Current input mode.
@@ -122,10 +131,14 @@ pub struct App {
     pub auto_reconnect: bool,
     /// Port name for auto-reconnect.
     reconnect_port: Option<String>,
-    /// When the last reconnect attempt was made.
-    last_reconnect_attempt: Option<Instant>,
-    /// Reconnect delay.
+    /// Base reconnect delay.
     reconnect_delay: Duration,
+    /// Delay currently scheduled for the next reconnect attempt.
+    reconnect_current_delay: Duration,
+    /// When the next reconnect attempt should happen.
+    reconnect_next_attempt: Option<Instant>,
+    /// Number of failed reconnect attempts so far.
+    reconnect_attempts: usize,
     /// Status message (shown temporarily in status bar).
     pub status_message: Option<(String, Instant)>,
     /// Line filter (regex-based include/exclude).
@@ -152,7 +165,7 @@ pub struct App {
     pub last_command_sent: Option<Instant>,
     /// Duration of the last command round-trip.
     pub last_response_time: Option<Duration>,
-    /// Quick-send commands (most frequently used from history).
+    /// Quick-send commands in persisted MRU order.
     pub quicksend: Vec<String>,
     /// Whether to display sent messages in the terminal view.
     pub show_sent: bool,
@@ -168,13 +181,19 @@ pub struct App {
     pending_macro_commands: VecDeque<PendingMacroCommand>,
     /// Name of the macro currently being executed.
     active_macro_name: Option<String>,
+    /// Name of the last successfully started macro.
+    last_executed_macro: Option<String>,
+    /// Scroll offset within the help overlay.
+    pub help_scroll: u16,
+    /// Maximum scroll offset available within the help overlay.
+    pub help_scroll_max: u16,
 }
 
 impl App {
     pub fn new(serial_config: SerialConfig, line_ending: String, app_config: AppConfig) -> Self {
         let history =
             CommandHistory::from_config(app_config.history.max_entries, &app_config.history.file);
-        let quicksend = history.top_commands(8);
+        let quicksend = Self::sanitize_quicksend(app_config.quicksend.recent.clone());
         let logger = SessionLogger::from_config(
             &app_config.logging.log_directory,
             &app_config.logging.log_format,
@@ -200,6 +219,8 @@ impl App {
         macros: MacroManager,
         quicksend: Vec<String>,
     ) -> Self {
+        let mut app_config = app_config;
+        app_config.quicksend.recent = quicksend.clone();
         Self {
             mode: Mode::Input,
             return_mode: Mode::Input,
@@ -229,8 +250,11 @@ impl App {
             logger,
             auto_reconnect: app_config.behavior.auto_reconnect,
             reconnect_port: None,
-            last_reconnect_attempt: None,
             reconnect_delay: Duration::from_millis(app_config.behavior.reconnect_delay_ms),
+            reconnect_current_delay: Duration::from_millis(app_config.behavior.reconnect_delay_ms)
+                .min(MAX_RECONNECT_DELAY),
+            reconnect_next_attempt: None,
+            reconnect_attempts: 0,
             status_message: None,
             filter: LineFilter::new(),
             macros,
@@ -252,13 +276,144 @@ impl App {
             hex_input_mode: false,
             pending_macro_commands: VecDeque::new(),
             active_macro_name: None,
+            last_executed_macro: None,
+            help_scroll: 0,
+            help_scroll_max: 0,
         }
+    }
+
+    fn sanitize_quicksend(entries: Vec<String>) -> Vec<String> {
+        let mut sanitized = Vec::new();
+        for entry in entries {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() || sanitized.iter().any(|existing| existing == trimmed) {
+                continue;
+            }
+            sanitized.push(trimmed.to_string());
+            if sanitized.len() == 8 {
+                break;
+            }
+        }
+        sanitized
+    }
+
+    fn profile_for_port(&self, port_name: &str) -> DefaultsConfig {
+        self.app_config
+            .connection
+            .port_profiles
+            .get(port_name)
+            .cloned()
+            .unwrap_or_else(|| self.app_config.defaults.clone())
+    }
+
+    fn apply_defaults_profile(&mut self, profile: &DefaultsConfig) {
+        self.serial_config = profile.to_serial_config();
+        self.line_ending = profile.to_line_ending();
+    }
+
+    pub fn load_port_profile(&mut self, port_name: &str) {
+        let profile = self.profile_for_port(port_name);
+        self.apply_defaults_profile(&profile);
+    }
+
+    fn current_defaults_profile(&self) -> DefaultsConfig {
+        DefaultsConfig::from_runtime(&self.serial_config, &self.line_ending)
+    }
+
+    fn save_global_defaults(&mut self) {
+        self.app_config.defaults = self.current_defaults_profile();
+        self.app_config.save();
+    }
+
+    fn save_port_profile(&mut self, port_name: &str) {
+        self.app_config
+            .connection
+            .port_profiles
+            .insert(port_name.to_string(), self.current_defaults_profile());
+        self.app_config.save();
+    }
+
+    fn promote_quicksend(&mut self, command: &str) {
+        let command = command.trim();
+        if command.is_empty() {
+            return;
+        }
+
+        self.quicksend.retain(|existing| existing != command);
+        self.quicksend.insert(0, command.to_string());
+        self.quicksend.truncate(8);
+        self.app_config.quicksend.recent = self.quicksend.clone();
+        self.app_config.save();
+    }
+
+    fn reset_reconnect_state(&mut self) {
+        self.reconnect_port = None;
+        self.reconnect_current_delay = self.reconnect_delay.min(MAX_RECONNECT_DELAY);
+        self.reconnect_next_attempt = None;
+        self.reconnect_attempts = 0;
+    }
+
+    fn schedule_reconnect(&mut self, port_name: String, now: Instant) {
+        self.reconnect_port = Some(port_name.clone());
+        self.reconnect_current_delay = self.reconnect_delay.min(MAX_RECONNECT_DELAY);
+        self.reconnect_next_attempt = Some(now + self.reconnect_current_delay);
+        self.reconnect_attempts = 0;
+        self.connection_state = ConnectionState::Reconnecting(port_name);
+    }
+
+    fn handle_connection_loss(&mut self, port_name: String, error_message: String, now: Instant) {
+        self.disconnect_internal(true);
+        if self.auto_reconnect && !port_name.is_empty() {
+            self.schedule_reconnect(port_name, now);
+        } else {
+            self.connection_state = ConnectionState::Error(error_message);
+        }
+    }
+
+    pub fn reconnect_status(&self, now: Instant) -> Option<(usize, Duration)> {
+        if !matches!(self.connection_state, ConnectionState::Reconnecting(_)) {
+            return None;
+        }
+
+        let next_attempt = self.reconnect_next_attempt?;
+        let remaining = next_attempt.saturating_duration_since(now);
+        Some((self.reconnect_attempts + 1, remaining))
+    }
+
+    pub fn rerun_last_macro(&mut self) {
+        if self.active_macro_name.is_some() {
+            self.set_status("A macro is already running".to_string());
+            return;
+        }
+
+        if let Some(name) = self.last_executed_macro.clone() {
+            self.execute_macro(&name);
+        } else {
+            self.set_status("No macro has been run yet".to_string());
+        }
+    }
+
+    pub fn reload_macros(&mut self) {
+        if self.active_macro_name.is_some() {
+            self.set_status("Cannot reload macros while a macro is running".to_string());
+            return;
+        }
+
+        self.macros.reload();
+        let macro_count = self.macros.list().len();
+        if macro_count == 0 {
+            self.macro_select_index = 0;
+        } else if self.macro_select_index >= macro_count {
+            self.macro_select_index = macro_count - 1;
+        }
+        self.set_status("Macros reloaded".to_string());
     }
 
     /// Connect to the specified serial port.
     pub fn connect(&mut self, port_name: &str) {
         // Disconnect first if already connected
         self.disconnect_internal(false);
+        self.reset_reconnect_state();
 
         let (tx, rx) = mpsc::channel();
 
@@ -268,8 +423,6 @@ impl App {
                 self.connection = Some(conn);
                 self.serial_rx = Some(rx);
                 self.serial_tx = Some(tx);
-                self.reconnect_port = Some(port_name.to_string());
-                self.last_reconnect_attempt = None;
                 self.set_status(format!("Connected to {}", port_name));
                 // Save last port for auto-connect on next launch
                 self.app_config.connection.last_port = Some(port_name.to_string());
@@ -293,7 +446,7 @@ impl App {
         self.serial_tx = None;
         if !keep_reconnect {
             self.connection_state = ConnectionState::Disconnected;
-            self.reconnect_port = None;
+            self.reset_reconnect_state();
         }
     }
 
@@ -311,7 +464,7 @@ impl App {
             }
             ConnectionState::Reconnecting(_) => {
                 // Cancel reconnection
-                self.reconnect_port = None;
+                self.reset_reconnect_state();
                 self.connection_state = ConnectionState::Disconnected;
                 self.set_status("Reconnection cancelled".to_string());
             }
@@ -371,6 +524,8 @@ impl App {
                             }
                         }
                     }
+                    self.history.push(text);
+                    self.history.reset_navigation();
                 }
                 Err(e) => {
                     self.set_status(format!("Hex parse error: {}", e));
@@ -378,48 +533,48 @@ impl App {
                 }
             }
         } else {
-            let line_ending = self.line_ending.clone();
-            let data = format!("{}{}", text, line_ending);
-
-            // Echo command to scrollback buffer
-            if self.show_sent {
-                self.buffer.push_sent_line(text.clone());
-            }
-
-            if let Some(conn) = &self.connection {
-                match conn.write(data.as_bytes()) {
-                    Ok(_) => {
-                        self.tx_bytes = conn.tx_bytes();
-                        self.last_command_sent = Some(Instant::now());
-                    }
-                    Err(_) => {
-                        self.connection_state = ConnectionState::Error("Write failed".to_string());
-                    }
-                }
-            }
+            self.send_plain_text(&text, SendSource::Manual);
         }
-
-        // Add to history
-        self.history.push(text);
-        self.history.reset_navigation();
 
         self.input_text.clear();
         self.input_cursor = 0;
         self.ghost_suggestion = None;
-        self.update_quicksend();
-    }
-
-    /// Update the quick-send command list from history frequency.
-    pub fn update_quicksend(&mut self) {
-        self.quicksend = self.history.top_commands(8);
     }
 
     /// Send a quick-send command by index (0-based).
     pub fn send_quicksend(&mut self, index: usize) {
         if let Some(cmd) = self.quicksend.get(index).cloned() {
-            self.input_text = cmd;
-            self.input_cursor = self.input_text.len();
-            self.send_command();
+            self.send_plain_text(&cmd, SendSource::Quicksend);
+        }
+    }
+
+    fn send_plain_text(&mut self, text: &str, source: SendSource) {
+        let line_ending = self.line_ending.clone();
+        let data = format!("{}{}", text, line_ending);
+
+        if self.show_sent {
+            self.buffer.push_sent_line(text.to_string());
+        }
+
+        if let Some(conn) = &self.connection {
+            match conn.write(data.as_bytes()) {
+                Ok(_) => {
+                    self.tx_bytes = conn.tx_bytes();
+                    self.last_command_sent = Some(Instant::now());
+                }
+                Err(_) => {
+                    self.connection_state = ConnectionState::Error("Write failed".to_string());
+                }
+            }
+        }
+
+        if source != SendSource::Macro {
+            self.history.push(text.to_string());
+            self.history.reset_navigation();
+        }
+
+        if source == SendSource::Manual {
+            self.promote_quicksend(text);
         }
     }
 
@@ -453,15 +608,12 @@ impl App {
                         ConnectionState::Connected(p) => p.clone(),
                         _ => String::new(),
                     };
-                    self.disconnect_internal(true);
-                    if self.auto_reconnect && !port.is_empty() {
-                        self.reconnect_port = Some(port.clone());
-                        self.connection_state = ConnectionState::Reconnecting(port);
-                        self.set_status("Port disconnected, reconnecting...".to_string());
-                    } else {
-                        self.connection_state =
-                            ConnectionState::Error("Port disconnected".to_string());
-                    }
+                    self.handle_connection_loss(
+                        port,
+                        "Port disconnected".to_string(),
+                        Instant::now(),
+                    );
+                    changed = true;
                     break;
                 }
                 Ok(SerialEvent::Error(e)) => {
@@ -469,13 +621,8 @@ impl App {
                         ConnectionState::Connected(p) => p.clone(),
                         _ => String::new(),
                     };
-                    self.disconnect_internal(true);
-                    if self.auto_reconnect && !port.is_empty() {
-                        self.reconnect_port = Some(port.clone());
-                        self.connection_state = ConnectionState::Reconnecting(port);
-                    } else {
-                        self.connection_state = ConnectionState::Error(e);
-                    }
+                    self.handle_connection_loss(port, e, Instant::now());
+                    changed = true;
                     break;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -484,14 +631,12 @@ impl App {
                         ConnectionState::Connected(p) => p.clone(),
                         _ => String::new(),
                     };
-                    self.disconnect_internal(true);
-                    if self.auto_reconnect && !port.is_empty() {
-                        self.reconnect_port = Some(port.clone());
-                        self.connection_state = ConnectionState::Reconnecting(port);
-                    } else {
-                        self.connection_state =
-                            ConnectionState::Error("Reader thread died".to_string());
-                    }
+                    self.handle_connection_loss(
+                        port,
+                        "Reader thread died".to_string(),
+                        Instant::now(),
+                    );
+                    changed = true;
                     break;
                 }
             }
@@ -533,29 +678,33 @@ impl App {
             return false;
         }
 
-        // Check if enough time has passed since last attempt
-        if let Some(last) = &self.last_reconnect_attempt {
-            if last.elapsed() < self.reconnect_delay {
-                return false;
-            }
+        let next_attempt = match self.reconnect_next_attempt {
+            Some(next_attempt) => next_attempt,
+            None => return false,
+        };
+        if now < next_attempt {
+            return false;
         }
-
-        self.last_reconnect_attempt = Some(now);
 
         let (tx, rx) = mpsc::channel();
         match SerialConnection::open(&port, &self.serial_config, tx.clone()) {
             Ok(conn) => {
+                self.reset_reconnect_state();
                 self.connection_state = ConnectionState::Connected(port.clone());
                 self.connection = Some(conn);
                 self.serial_rx = Some(rx);
                 self.serial_tx = Some(tx);
                 self.set_status(format!("Reconnected to {}", port));
-                self.last_reconnect_attempt = None;
+                self.app_config.connection.last_port = Some(port.clone());
+                self.app_config.save();
                 self.ensure_auto_logging();
                 true
             }
             Err(_) => {
-                // Will retry on next tick
+                self.reconnect_attempts += 1;
+                self.reconnect_current_delay =
+                    (self.reconnect_current_delay.saturating_mul(2)).min(MAX_RECONNECT_DELAY);
+                self.reconnect_next_attempt = Some(now + self.reconnect_current_delay);
                 false
             }
         }
@@ -566,15 +715,18 @@ impl App {
         self.set_status("Auto-detecting baud rate...".to_string());
         match crate::serial::auto_detect::auto_detect_baud(port_name) {
             Some(rate) => {
-                self.serial_config.baud_rate = rate;
-                self.app_config.defaults.baud_rate = rate;
-                self.app_config.save();
+                self.apply_detected_baud(port_name, rate);
                 self.set_status(format!("Detected baud rate: {}", rate));
             }
             None => {
                 self.set_status("Could not detect baud rate — no readable data".to_string());
             }
         }
+    }
+
+    fn apply_detected_baud(&mut self, port_name: &str, rate: u32) {
+        self.serial_config.baud_rate = rate;
+        self.save_port_profile(port_name);
     }
 
     /// Open the port selector popup.
@@ -588,6 +740,7 @@ impl App {
     pub fn connect_selected_port(&mut self) {
         if let Some(port) = self.available_ports.get(self.port_select_index) {
             let port_name = port.name.clone();
+            self.load_port_profile(&port_name);
             self.restore_mode();
             self.connect(&port_name);
         }
@@ -869,25 +1022,14 @@ impl App {
     }
 
     pub fn open_help(&mut self) {
+        self.help_scroll = 0;
+        self.help_scroll_max = 0;
         self.open_overlay(Mode::Help);
     }
 
     /// Send raw text over serial (used by macros).
     pub fn send_text(&mut self, text: &str) {
-        let line_ending = self.line_ending.clone();
-        let data = format!("{}{}", text, line_ending);
-
-        if let Some(conn) = &self.connection {
-            match conn.write(data.as_bytes()) {
-                Ok(_) => {
-                    self.tx_bytes = conn.tx_bytes();
-                    self.last_command_sent = Some(Instant::now());
-                }
-                Err(_) => {
-                    self.connection_state = ConnectionState::Error("Write failed".to_string());
-                }
-            }
-        }
+        self.send_plain_text(text, SendSource::Macro);
     }
 
     /// Execute a macro by name.
@@ -899,6 +1041,10 @@ impl App {
 
         if let Some(m) = self.macros.get(name) {
             let commands = m.commands.clone();
+            if commands.is_empty() {
+                self.set_status(format!("Macro has no commands: {}", name));
+                return;
+            }
             let mut ready_at = Instant::now();
             let pending = commands.into_iter().map(|command| {
                 ready_at += Duration::from_millis(command.delay_ms);
@@ -910,6 +1056,7 @@ impl App {
 
             self.pending_macro_commands = pending.collect();
             self.active_macro_name = Some(name.to_string());
+            self.last_executed_macro = Some(name.to_string());
             self.set_status(format!("Running macro: {}", name));
         } else {
             self.set_status(format!("Macro not found: {}", name));
@@ -939,7 +1086,7 @@ impl App {
             }
 
             if let Some(command) = self.pending_macro_commands.pop_front() {
-                self.send_text(&command.text);
+                self.send_plain_text(&command.text, SendSource::Macro);
                 changed = true;
             }
         }
@@ -1088,7 +1235,7 @@ impl App {
         let summary = self.serial_config.summary();
         self.set_status(format!("Settings: {}", summary));
 
-        // Persist all serial settings to config file
+        // Persist either to the active port profile or global defaults.
         self.sync_config_to_disk();
 
         // If connected, reconnect with new settings
@@ -1131,33 +1278,29 @@ impl App {
 
     /// Sync the current serial config and line ending to app_config and save to disk.
     fn sync_config_to_disk(&mut self) {
-        self.app_config.defaults.baud_rate = self.serial_config.baud_rate;
-        self.app_config.defaults.data_bits = match self.serial_config.data_bits {
-            serialport::DataBits::Five => 5,
-            serialport::DataBits::Six => 6,
-            serialport::DataBits::Seven => 7,
-            serialport::DataBits::Eight => 8,
-        };
-        self.app_config.defaults.parity = match self.serial_config.parity {
-            serialport::Parity::None => "none".to_string(),
-            serialport::Parity::Odd => "odd".to_string(),
-            serialport::Parity::Even => "even".to_string(),
-        };
-        self.app_config.defaults.stop_bits = match self.serial_config.stop_bits {
-            serialport::StopBits::One => 1,
-            serialport::StopBits::Two => 2,
-        };
-        self.app_config.defaults.flow_control = match self.serial_config.flow_control {
-            serialport::FlowControl::None => "none".to_string(),
-            serialport::FlowControl::Software => "software".to_string(),
-            serialport::FlowControl::Hardware => "hardware".to_string(),
-        };
-        self.app_config.defaults.line_ending = match self.line_ending.as_str() {
-            "\n" => "lf".to_string(),
-            "\r" => "cr".to_string(),
-            _ => "crlf".to_string(),
-        };
-        self.app_config.save();
+        match &self.connection_state {
+            ConnectionState::Connected(port) | ConnectionState::Reconnecting(port) => {
+                let port = port.clone();
+                self.save_port_profile(&port);
+            }
+            _ => self.save_global_defaults(),
+        }
+    }
+
+    pub fn scroll_help_up(&mut self, lines: u16) {
+        self.help_scroll = self.help_scroll.saturating_sub(lines);
+    }
+
+    pub fn scroll_help_down(&mut self, lines: u16) {
+        self.help_scroll = self
+            .help_scroll
+            .saturating_add(lines)
+            .min(self.help_scroll_max);
+    }
+
+    pub fn set_help_scroll_max(&mut self, max_scroll: u16) {
+        self.help_scroll_max = max_scroll;
+        self.help_scroll = self.help_scroll.min(self.help_scroll_max);
     }
 
     // ── Word-level cursor ───────────────────────────────
@@ -1264,12 +1407,34 @@ mod tests {
     use crate::logging::LogFormat;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serialport::{DataBits, FlowControl, Parity, StopBits};
+    use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn unique_temp_path(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "yapper-test-{}-{}-{}",
+            prefix,
+            std::process::id(),
+            TEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
 
     fn test_app_with_config(app_config: AppConfig) -> App {
+        let mut app_config = app_config;
+        let default_config = AppConfig::default();
+        if app_config.history.file == default_config.history.file {
+            app_config.history.file = unique_temp_path("history").display().to_string();
+        }
+        if app_config.logging.log_directory == default_config.logging.log_directory {
+            app_config.logging.log_directory = unique_temp_path("logs").display().to_string();
+        }
+
         let history =
             CommandHistory::from_config(app_config.history.max_entries, &app_config.history.file);
-        let quicksend = history.top_commands(8);
+        let quicksend = App::sanitize_quicksend(app_config.quicksend.recent.clone());
         let logger = SessionLogger::from_config(
             &app_config.logging.log_directory,
             &app_config.logging.log_format,
@@ -1476,5 +1641,233 @@ mod tests {
         app.filter_select_index = 0;
         handle_key_event(&mut app, ctrl('d'));
         assert_eq!(app.filter.count(), 0);
+    }
+
+    #[test]
+    fn test_quicksend_manual_send_builds_mru_and_fkey_send_is_stable() {
+        let mut app = test_app_with_config(AppConfig::default());
+
+        app.send_plain_text("AT", SendSource::Manual);
+        app.send_plain_text("RST", SendSource::Manual);
+        app.send_plain_text("AT", SendSource::Manual);
+
+        assert_eq!(app.quicksend, vec!["AT".to_string(), "RST".to_string()]);
+
+        let before = app.quicksend.clone();
+        app.send_quicksend(1);
+        assert_eq!(app.quicksend, before);
+
+        app.send_plain_text("JOIN", SendSource::Macro);
+        assert_eq!(app.quicksend, before);
+        assert_eq!(app.app_config.quicksend.recent, before);
+    }
+
+    #[test]
+    fn test_load_port_profile_prefers_saved_settings() {
+        let mut config = AppConfig::default();
+        config.defaults.baud_rate = 115200;
+        config.defaults.line_ending = "crlf".to_string();
+        config.connection.port_profiles.insert(
+            "/dev/ttyUSB0".to_string(),
+            DefaultsConfig {
+                baud_rate: 9600,
+                data_bits: 7,
+                parity: "even".to_string(),
+                stop_bits: 2,
+                flow_control: "hardware".to_string(),
+                line_ending: "lf".to_string(),
+            },
+        );
+
+        let mut app = test_app_with_config(config);
+        app.load_port_profile("/dev/ttyUSB0");
+
+        assert_eq!(app.serial_config.baud_rate, 9600);
+        assert_eq!(app.serial_config.data_bits, DataBits::Seven);
+        assert_eq!(app.serial_config.parity, Parity::Even);
+        assert_eq!(app.serial_config.stop_bits, StopBits::Two);
+        assert_eq!(app.serial_config.flow_control, FlowControl::Hardware);
+        assert_eq!(app.line_ending, "\n");
+    }
+
+    #[test]
+    fn test_apply_settings_saves_connected_port_profile_only() {
+        let config = AppConfig::default();
+        let mut app = test_app_with_config(config);
+        app.connection_state = ConnectionState::Connected("/dev/ttyUSB0".to_string());
+        app.settings_original_config = Some(SerialConfig::default());
+        app.settings_original_line_ending = Some("\r\n".to_string());
+        app.serial_config.baud_rate = 57600;
+        app.line_ending = "\n".to_string();
+
+        app.apply_settings();
+
+        assert_eq!(app.app_config.defaults.baud_rate, 115200);
+        let profile = app
+            .app_config
+            .connection
+            .port_profiles
+            .get("/dev/ttyUSB0")
+            .unwrap();
+        assert_eq!(profile.baud_rate, 57600);
+        assert_eq!(profile.line_ending, "lf");
+    }
+
+    #[test]
+    fn test_apply_settings_saves_global_defaults_when_disconnected() {
+        let config = AppConfig::default();
+        let mut app = test_app_with_config(config);
+        app.settings_original_config = Some(SerialConfig::default());
+        app.settings_original_line_ending = Some("\r\n".to_string());
+        app.serial_config.baud_rate = 38400;
+        app.line_ending = "\r".to_string();
+
+        app.apply_settings();
+
+        assert_eq!(app.app_config.defaults.baud_rate, 38400);
+        assert_eq!(app.app_config.defaults.line_ending, "cr");
+        assert!(app.app_config.connection.port_profiles.is_empty());
+    }
+
+    #[test]
+    fn test_apply_detected_baud_updates_port_profile_without_global_defaults() {
+        let config = AppConfig::default();
+        let mut app = test_app_with_config(config);
+
+        app.apply_detected_baud("/dev/ttyUSB1", 230400);
+
+        assert_eq!(app.serial_config.baud_rate, 230400);
+        assert_eq!(app.app_config.defaults.baud_rate, 115200);
+        assert_eq!(
+            app.app_config
+                .connection
+                .port_profiles
+                .get("/dev/ttyUSB1")
+                .unwrap()
+                .baud_rate,
+            230400
+        );
+    }
+
+    #[test]
+    fn test_reconnect_backoff_grows_and_resets_on_cancel() {
+        let mut config = AppConfig::default();
+        config.behavior.reconnect_delay_ms = 250;
+        let mut app = test_app_with_config(config);
+        let now = Instant::now();
+
+        app.schedule_reconnect("__missing_port__".to_string(), now);
+        assert_eq!(app.reconnect_status(now).unwrap().0, 1);
+        assert_eq!(
+            app.reconnect_status(now).unwrap().1,
+            Duration::from_millis(250)
+        );
+
+        assert!(!app.tick(now + Duration::from_millis(249)));
+        assert_eq!(app.reconnect_attempts, 0);
+
+        let mut scheduled = now + Duration::from_millis(250);
+        let expected_delays = [
+            Duration::from_millis(500),
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(4),
+            Duration::from_secs(8),
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+        ];
+
+        for expected_delay in expected_delays {
+            assert!(!app.tick(scheduled));
+            assert_eq!(app.reconnect_current_delay, expected_delay);
+            scheduled = app.reconnect_next_attempt.unwrap();
+        }
+
+        app.toggle_connection();
+        assert_eq!(app.connection_state, ConnectionState::Disconnected);
+        assert!(app.reconnect_next_attempt.is_none());
+        assert_eq!(app.reconnect_attempts, 0);
+    }
+
+    #[test]
+    fn test_rerun_last_macro_and_reload_macros() {
+        let macros_path = unique_temp_path("macros.toml");
+        fs::write(
+            &macros_path,
+            r#"
+                [[macros]]
+                name = "reset"
+                description = "Reset"
+                commands = ["AT+RST"]
+            "#,
+        )
+        .unwrap();
+
+        let mut config = AppConfig::default();
+        config.history.file = unique_temp_path("history").display().to_string();
+        config.logging.log_directory = unique_temp_path("logs").display().to_string();
+        let history = CommandHistory::from_config(config.history.max_entries, &config.history.file);
+        let quicksend = App::sanitize_quicksend(config.quicksend.recent.clone());
+        let logger =
+            SessionLogger::from_config(&config.logging.log_directory, &config.logging.log_format);
+        let mut macros = MacroManager::with_path(Some(macros_path.clone()));
+        macros.reload();
+        let mut app = App::build(
+            SerialConfig::default(),
+            "\r\n".to_string(),
+            config,
+            history,
+            logger,
+            macros,
+            quicksend,
+        );
+
+        app.execute_macro("reset");
+        assert_eq!(app.last_executed_macro.as_deref(), Some("reset"));
+        app.rerun_last_macro();
+        assert_eq!(
+            app.status_message.as_ref().map(|(msg, _)| msg.as_str()),
+            Some("A macro is already running")
+        );
+
+        let first_ready = app.pending_macro_commands.front().unwrap().ready_at;
+        assert!(app.tick(first_ready));
+
+        app.rerun_last_macro();
+        assert_eq!(app.active_macro_name.as_deref(), Some("reset"));
+
+        app.reload_macros();
+        assert_eq!(
+            app.status_message.as_ref().map(|(msg, _)| msg.as_str()),
+            Some("Cannot reload macros while a macro is running")
+        );
+
+        let rerun_ready = app.pending_macro_commands.front().unwrap().ready_at;
+        assert!(app.tick(rerun_ready));
+
+        fs::write(
+            &macros_path,
+            r#"
+                [[macros]]
+                name = "version"
+                description = "Version"
+                commands = ["AT+GMR"]
+            "#,
+        )
+        .unwrap();
+        app.reload_macros();
+
+        assert!(app.macros.get("version").is_some());
+        assert!(app.macros.get("reset").is_none());
+    }
+
+    #[test]
+    fn test_help_scroll_clamps() {
+        let mut app = test_app_with_config(AppConfig::default());
+        app.set_help_scroll_max(3);
+        app.scroll_help_down(10);
+        assert_eq!(app.help_scroll, 3);
+        app.scroll_help_up(10);
+        assert_eq!(app.help_scroll, 0);
     }
 }

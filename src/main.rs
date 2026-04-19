@@ -70,6 +70,7 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let app_config = config::AppConfig::load();
+    let startup_port = resolve_startup_port(&cli, &app_config);
 
     // Setup terminal
     enable_raw_mode()?;
@@ -83,38 +84,17 @@ fn main() -> Result<()> {
         },
     )?;
 
-    // Create app — merge CLI overrides with saved config defaults
-    let serial_config = serial::config::SerialConfig {
-        baud_rate: cli.baud.unwrap_or(app_config.defaults.baud_rate),
-        data_bits: parse_data_bits(cli.data_bits.unwrap_or(app_config.defaults.data_bits)),
-        parity: parse_parity(cli.parity.as_deref().unwrap_or(&app_config.defaults.parity)),
-        stop_bits: parse_stop_bits(cli.stop_bits.unwrap_or(app_config.defaults.stop_bits)),
-        flow_control: parse_flow_control(
-            cli.flow_control
-                .as_deref()
-                .unwrap_or(&app_config.defaults.flow_control),
-        ),
-    };
+    // Create app — merge CLI overrides with per-port profile or global defaults
+    let effective_defaults = resolve_effective_defaults(&cli, &app_config, startup_port.as_deref());
 
-    let line_ending = match cli
-        .line_ending
-        .as_deref()
-        .unwrap_or(&app_config.defaults.line_ending)
-    {
-        "lf" => "\n",
-        "cr" => "\r",
-        _ => "\r\n",
-    };
+    let serial_config = effective_defaults.to_serial_config();
+    let line_ending = effective_defaults.to_line_ending();
 
     let mut app = App::new(serial_config, line_ending.to_string(), app_config.clone());
 
     // Connect: CLI port takes priority, then auto-connect to last port
-    if let Some(port) = cli.port.as_deref() {
+    if let Some(port) = startup_port.as_deref() {
         app.connect(port);
-    } else if !cli.no_auto && app_config.connection.auto_connect {
-        if let Some(last_port) = &app_config.connection.last_port {
-            app.connect(last_port);
-        }
     }
 
     if cli.port.is_none() && !app.is_connected() {
@@ -138,34 +118,117 @@ fn main() -> Result<()> {
     result
 }
 
-fn parse_data_bits(bits: u8) -> serialport::DataBits {
-    match bits {
-        5 => serialport::DataBits::Five,
-        6 => serialport::DataBits::Six,
-        7 => serialport::DataBits::Seven,
-        _ => serialport::DataBits::Eight,
-    }
+fn resolve_startup_port(cli: &Cli, app_config: &config::AppConfig) -> Option<String> {
+    cli.port.clone().or_else(|| {
+        if !cli.no_auto && app_config.connection.auto_connect {
+            app_config.connection.last_port.clone()
+        } else {
+            None
+        }
+    })
 }
 
-fn parse_parity(parity: &str) -> serialport::Parity {
-    match parity.to_lowercase().as_str() {
-        "odd" => serialport::Parity::Odd,
-        "even" => serialport::Parity::Even,
-        _ => serialport::Parity::None,
+fn resolve_effective_defaults(
+    cli: &Cli,
+    app_config: &config::AppConfig,
+    startup_port: Option<&str>,
+) -> config::DefaultsConfig {
+    let mut effective_defaults = startup_port
+        .and_then(|port| app_config.connection.port_profiles.get(port))
+        .cloned()
+        .unwrap_or_else(|| app_config.defaults.clone());
+
+    if let Some(baud_rate) = cli.baud {
+        effective_defaults.baud_rate = baud_rate;
     }
+    if let Some(data_bits) = cli.data_bits {
+        effective_defaults.data_bits = data_bits;
+    }
+    if let Some(parity) = cli.parity.as_deref() {
+        effective_defaults.parity = parity.to_string();
+    }
+    if let Some(stop_bits) = cli.stop_bits {
+        effective_defaults.stop_bits = stop_bits;
+    }
+    if let Some(flow_control) = cli.flow_control.as_deref() {
+        effective_defaults.flow_control = flow_control.to_string();
+    }
+    if let Some(line_ending) = cli.line_ending.as_deref() {
+        effective_defaults.line_ending = line_ending.to_string();
+    }
+
+    effective_defaults
 }
 
-fn parse_stop_bits(bits: u8) -> serialport::StopBits {
-    match bits {
-        2 => serialport::StopBits::Two,
-        _ => serialport::StopBits::One,
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn parse_flow_control(fc: &str) -> serialport::FlowControl {
-    match fc.to_lowercase().as_str() {
-        "software" | "sw" | "xon" => serialport::FlowControl::Software,
-        "hardware" | "hw" | "rts" => serialport::FlowControl::Hardware,
-        _ => serialport::FlowControl::None,
+    fn cli() -> Cli {
+        Cli {
+            port: None,
+            baud: None,
+            data_bits: None,
+            parity: None,
+            stop_bits: None,
+            flow_control: None,
+            line_ending: None,
+            no_auto: false,
+        }
+    }
+
+    #[test]
+    fn test_resolve_effective_defaults_prefers_port_profile_for_auto_connect() {
+        let mut config = config::AppConfig::default();
+        config.connection.last_port = Some("/dev/ttyUSB0".to_string());
+        config.connection.port_profiles.insert(
+            "/dev/ttyUSB0".to_string(),
+            config::DefaultsConfig {
+                baud_rate: 9600,
+                data_bits: 7,
+                parity: "even".to_string(),
+                stop_bits: 2,
+                flow_control: "hardware".to_string(),
+                line_ending: "lf".to_string(),
+            },
+        );
+
+        let cli = cli();
+        let startup_port = resolve_startup_port(&cli, &config);
+        let resolved = resolve_effective_defaults(&cli, &config, startup_port.as_deref());
+
+        assert_eq!(startup_port.as_deref(), Some("/dev/ttyUSB0"));
+        assert_eq!(resolved.baud_rate, 9600);
+        assert_eq!(resolved.line_ending, "lf");
+    }
+
+    #[test]
+    fn test_resolve_effective_defaults_applies_cli_overrides_over_port_profile() {
+        let mut config = config::AppConfig::default();
+        config.connection.port_profiles.insert(
+            "/dev/ttyUSB1".to_string(),
+            config::DefaultsConfig {
+                baud_rate: 9600,
+                data_bits: 7,
+                parity: "even".to_string(),
+                stop_bits: 2,
+                flow_control: "hardware".to_string(),
+                line_ending: "lf".to_string(),
+            },
+        );
+
+        let mut cli = cli();
+        cli.port = Some("/dev/ttyUSB1".to_string());
+        cli.baud = Some(230400);
+        cli.parity = Some("none".to_string());
+        cli.line_ending = Some("crlf".to_string());
+
+        let startup_port = resolve_startup_port(&cli, &config);
+        let resolved = resolve_effective_defaults(&cli, &config, startup_port.as_deref());
+
+        assert_eq!(resolved.baud_rate, 230400);
+        assert_eq!(resolved.parity, "none");
+        assert_eq!(resolved.data_bits, 7);
+        assert_eq!(resolved.line_ending, "crlf");
     }
 }

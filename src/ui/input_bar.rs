@@ -43,7 +43,14 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
             if suggestion.len() > app.input_text.len() {
                 let suffix = &suggestion[app.input_text.len()..];
                 spans.push(Span::styled(suffix, Theme::timestamp()));
-                spans.push(Span::styled("  Tab accept", Theme::help_bar()));
+                if area.width >= 44 {
+                    let hint = if area.width >= 72 {
+                        "  Tab accept"
+                    } else {
+                        "  Tab"
+                    };
+                    spans.push(Span::styled(hint, Theme::help_bar()));
+                }
             }
         }
     }

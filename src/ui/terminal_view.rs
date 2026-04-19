@@ -66,9 +66,9 @@ fn render_text_view(app: &App, frame: &mut Frame, area: Rect) {
                 "Waiting for data..."
             }
         } else if app.mode == Mode::Input {
-            "Disconnected. Press Ctrl+P to choose a port, or Esc for browse mode"
+            "Disconnected. Press Ctrl+P for ports, or Esc for browse mode"
         } else {
-            "Disconnected. Press p to choose a port, c to connect, or ? for help"
+            "Disconnected. Press p for ports, m for macros, or ? for help"
         };
         lines.push(Line::from(Span::styled(
             format!("  {}", empty_msg),
