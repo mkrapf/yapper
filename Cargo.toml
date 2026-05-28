@@ -2,6 +2,7 @@
 name = "yapper"
 version = "0.4.0"
 edition = "2021"
+rust-version = "1.85"
 description = "A modern, ergonomic UART serial TUI terminal for embedded workflows"
 license = "MIT"
 repository = "https://github.com/mkrapf/yapper"
@@ -21,4 +22,4 @@ chrono = "0.4"
 unicode-width = "0.2"
 anyhow = "1"
 regex = "1"
-cli-clipboard = "0.4"
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }

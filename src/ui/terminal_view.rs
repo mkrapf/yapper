@@ -84,19 +84,18 @@ fn render_text_view(app: &App, frame: &mut Frame, area: Rect) {
 
             let line = if i < app.buffer.len() {
                 if let Some(entry) = app.buffer.get(i) {
-                    let base = build_line(
-                        &entry.text,
-                        entry.timestamp,
-                        &entry.line_ending,
-                        i,
-                        show_ts,
+                    let context = LineRenderContext {
+                        line_index: i,
+                        show_timestamps: show_ts,
                         timestamp_format,
-                        show_le,
+                        show_line_endings: show_le,
                         color_log_levels,
                         search_current,
-                        &search_matches,
-                        entry.is_sent,
-                    );
+                        search_matches: &search_matches,
+                        is_sent: entry.is_sent,
+                    };
+                    let base =
+                        build_line(&entry.text, entry.timestamp, &entry.line_ending, context);
                     apply_selection(base, screen_row, area.x, sel_range)
                 } else {
                     Line::from("")
@@ -168,22 +167,27 @@ fn apply_selection(
 
     for span in line.spans {
         let span_text = span.content.to_string();
-        let span_len = span_text.len();
+        let span_len = crate::display::width(&span_text);
         let span_end = col + span_len;
 
-        if span_end <= row_sel_start || col > row_sel_end {
+        let row_sel_end_exclusive = row_sel_end.saturating_add(1);
+
+        if span_end <= row_sel_start || col >= row_sel_end_exclusive {
             new_spans.push(Span::styled(span_text, span.style));
-        } else if col >= row_sel_start && span_end <= row_sel_end.saturating_add(1) {
+        } else if col >= row_sel_start && span_end <= row_sel_end_exclusive {
             new_spans.push(Span::styled(span_text, sel_style));
         } else {
-            let chars: Vec<char> = span_text.chars().collect();
             let mut segment = String::new();
-            let mut in_sel = col >= row_sel_start && col <= row_sel_end;
+            let mut in_sel = false;
+            let mut char_col = col;
 
-            for (ci, &ch) in chars.iter().enumerate() {
-                let cc = col + ci;
-                let sel = cc >= row_sel_start && cc <= row_sel_end;
-                if sel != in_sel && !segment.is_empty() {
+            for ch in span_text.chars() {
+                let ch_width = crate::display::char_width(ch).max(1);
+                let char_end = char_col + ch_width;
+                let sel = char_col < row_sel_end_exclusive && char_end > row_sel_start;
+                if segment.is_empty() {
+                    in_sel = sel;
+                } else if sel != in_sel {
                     new_spans.push(Span::styled(
                         segment.clone(),
                         if in_sel { sel_style } else { span.style },
@@ -192,6 +196,7 @@ fn apply_selection(
                     in_sel = sel;
                 }
                 segment.push(ch);
+                char_col = char_end;
             }
             if !segment.is_empty() {
                 new_spans.push(Span::styled(
@@ -261,30 +266,34 @@ fn render_hex_view(app: &App, frame: &mut Frame, area: Rect) {
 
 /// Build a single line with timestamp, search highlight, and optional line ending indicator.
 /// Takes only owned/copied values to avoid lifetime conflicts.
+struct LineRenderContext<'a> {
+    line_index: usize,
+    show_timestamps: bool,
+    timestamp_format: &'a str,
+    show_line_endings: bool,
+    color_log_levels: bool,
+    search_current: Option<usize>,
+    search_matches: &'a [usize],
+    is_sent: bool,
+}
+
 fn build_line(
     text: &str,
     timestamp: chrono::DateTime<chrono::Local>,
     line_ending: &LineEnding,
-    line_index: usize,
-    show_timestamps: bool,
-    timestamp_format: &str,
-    show_line_endings: bool,
-    color_log_levels: bool,
-    search_current: Option<usize>,
-    search_matches: &[usize],
-    is_sent: bool,
+    context: LineRenderContext<'_>,
 ) -> Line<'static> {
     let mut spans = Vec::new();
 
-    if show_timestamps {
-        let ts = timestamp.format(timestamp_format).to_string();
+    if context.show_timestamps {
+        let ts = timestamp.format(context.timestamp_format).to_string();
         spans.push(Span::styled(format!(" [{}] ", ts), Theme::timestamp()));
     } else {
         spans.push(Span::raw(" "));
     }
 
     // Sent message prefix
-    if is_sent {
+    if context.is_sent {
         spans.push(Span::styled(
             "❯ ",
             Style::default()
@@ -293,8 +302,8 @@ fn build_line(
         ));
     }
 
-    let is_current = search_current == Some(line_index);
-    let is_match = search_matches.contains(&line_index);
+    let is_current = context.search_current == Some(context.line_index);
+    let is_match = context.search_matches.contains(&context.line_index);
     let owned_text = text.to_string();
 
     if is_current {
@@ -312,7 +321,7 @@ fn build_line(
                 .fg(Color::Rgb(248, 248, 242))
                 .bg(Color::Rgb(60, 63, 80)),
         ));
-    } else if is_sent {
+    } else if context.is_sent {
         // Sent messages: use a distinct style (slightly dimmed cyan)
         spans.push(Span::styled(
             owned_text,
@@ -322,10 +331,10 @@ fn build_line(
         // Apply syntax highlighting
         let highlights = crate::highlight::highlight_line(text);
         if highlights.is_empty() {
-            let style = Theme::style_for_line(text, color_log_levels);
+            let style = Theme::style_for_line(text, context.color_log_levels);
             spans.push(Span::styled(owned_text, style));
         } else {
-            let base_style = Theme::style_for_line(text, color_log_levels);
+            let base_style = Theme::style_for_line(text, context.color_log_levels);
             let mut pos = 0;
             for (range, hl_style) in &highlights {
                 if range.start > pos {
@@ -343,7 +352,7 @@ fn build_line(
         }
     }
 
-    if show_line_endings && *line_ending != LineEnding::None {
+    if context.show_line_endings && *line_ending != LineEnding::None {
         spans.push(Span::styled(
             format!(" {}", line_ending.display()),
             Theme::line_ending_indicator(),

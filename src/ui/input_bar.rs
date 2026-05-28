@@ -20,7 +20,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     } else {
         " ❯ "
     };
-    let prompt_len = if app.hex_input_mode { 6u16 } else { 3u16 };
+    let prompt_width = if app.hex_input_mode { 6usize } else { 3usize };
 
     let prompt_style = if app.hex_input_mode {
         Style::default()
@@ -61,6 +61,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
 
     // Place the cursor if in input mode
     if is_active || app.hex_input_mode {
-        frame.set_cursor_position((area.x + prompt_len + app.input_cursor as u16, area.y));
+        let input_width = crate::display::width_prefix_chars(&app.input_text, app.input_cursor);
+        frame.set_cursor_position((area.x + (prompt_width + input_width) as u16, area.y));
     }
 }

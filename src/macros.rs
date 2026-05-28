@@ -26,13 +26,14 @@ pub struct MacroCommand {
 pub struct MacroManager {
     macros: BTreeMap<String, Macro>,
     file_path: Option<PathBuf>,
+    last_error: Option<String>,
 }
 
 impl MacroManager {
     pub fn new() -> Self {
         let file_path = dirs::config_dir().map(|d| d.join("yapper").join("macros.toml"));
         let mut mgr = Self::with_path(file_path);
-        mgr.load();
+        mgr.last_error = mgr.load().err();
         mgr
     }
 
@@ -40,12 +41,17 @@ impl MacroManager {
         Self {
             macros: BTreeMap::new(),
             file_path,
+            last_error: None,
         }
     }
 
     #[cfg(test)]
     pub fn new_in_memory() -> Self {
         Self::with_path(None)
+    }
+
+    pub fn take_last_error(&mut self) -> Option<String> {
+        self.last_error.take()
     }
 
     /// Get all macros sorted by name.
@@ -59,51 +65,53 @@ impl MacroManager {
     }
 
     /// Add or update a macro.
-    pub fn save_macro(&mut self, m: Macro) {
+    pub fn save_macro(&mut self, m: Macro) -> Result<(), String> {
         self.macros.insert(m.name.clone(), m);
-        self.save();
+        self.save()
     }
 
     /// Remove a macro.
-    pub fn remove(&mut self, name: &str) {
+    pub fn remove(&mut self, name: &str) -> Result<(), String> {
         self.macros.remove(name);
-        self.save();
+        self.save()
     }
 
     /// Load macros from file.
-    fn load(&mut self) {
+    fn load(&mut self) -> Result<(), String> {
         let path = match &self.file_path {
             Some(p) => p,
-            None => return,
+            None => return Ok(()),
         };
 
         if !path.exists() {
             // Create default example macros
-            self.create_defaults();
-            return;
+            self.create_defaults()?;
+            return Ok(());
         }
 
-        if let Ok(content) = fs::read_to_string(path) {
-            if let Some(macros) = parse_macro_file(&content) {
-                self.macros = macros;
-            }
-        }
+        let content = fs::read_to_string(path)
+            .map_err(|err| format!("failed to read macros {}: {}", path.display(), err))?;
+        let macros = parse_macro_file_result(&content)
+            .map_err(|err| format!("failed to parse macros {}: {}", path.display(), err))?;
+        self.macros = macros;
+        Ok(())
     }
 
     /// Reload macros from disk, preserving the current set if parsing fails.
-    pub fn reload(&mut self) {
-        self.load();
+    pub fn reload(&mut self) -> Result<(), String> {
+        self.load()
     }
 
     /// Save macros to file.
-    fn save(&self) {
+    fn save(&self) -> Result<(), String> {
         let path = match &self.file_path {
             Some(p) => p,
-            None => return,
+            None => return Ok(()),
         };
 
         if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create {}: {}", parent.display(), err))?;
         }
 
         let document = CanonicalMacroDocument {
@@ -115,12 +123,13 @@ impl MacroManager {
                 .collect(),
         };
 
-        if let Ok(content) = toml::to_string_pretty(&document) {
-            let _ = fs::write(path, content);
-        }
+        let content = toml::to_string_pretty(&document)
+            .map_err(|err| format!("failed to encode macros: {}", err))?;
+        fs::write(path, content)
+            .map_err(|err| format!("failed to write macros {}: {}", path.display(), err))
     }
 
-    fn create_defaults(&mut self) {
+    fn create_defaults(&mut self) -> Result<(), String> {
         self.macros.insert(
             "reset".to_string(),
             Macro {
@@ -143,11 +152,15 @@ impl MacroManager {
                 }],
             },
         );
-        self.save();
+        self.save()
     }
 }
 
 fn parse_macro_file(content: &str) -> Option<BTreeMap<String, Macro>> {
+    parse_macro_file_result(content).ok()
+}
+
+fn parse_macro_file_result(content: &str) -> Result<BTreeMap<String, Macro>, String> {
     if let Ok(document) = toml::from_str::<CanonicalMacroDocument>(content) {
         if !document.macros.is_empty() {
             let mut macros = BTreeMap::new();
@@ -155,7 +168,7 @@ fn parse_macro_file(content: &str) -> Option<BTreeMap<String, Macro>> {
                 let name = macro_file.name.clone();
                 macros.insert(name, macro_file.into_macro());
             }
-            return Some(macros);
+            return Ok(macros);
         }
     }
 
@@ -179,10 +192,10 @@ fn parse_macro_file(content: &str) -> Option<BTreeMap<String, Macro>> {
                 },
             );
         }
-        return Some(macros);
+        return Ok(macros);
     }
 
-    None
+    Err("expected [[macros]] entries or legacy keyed macro tables".to_string())
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -265,6 +278,15 @@ struct LegacyMacroCommandFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_path(prefix: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("yapper-macros-test-{}-{}", prefix, suffix))
+    }
 
     #[test]
     fn test_parse_canonical_macro_file() {
@@ -326,5 +348,29 @@ mod tests {
             macro_file.commands,
             vec!["AT+RST".to_string(), "AT".to_string()]
         );
+    }
+
+    #[test]
+    fn test_reload_reports_parse_error_and_preserves_existing_macros() {
+        let path = unique_temp_path("macros.toml");
+        fs::write(
+            &path,
+            r#"
+                [[macros]]
+                name = "reset"
+                commands = ["AT+RST"]
+            "#,
+        )
+        .unwrap();
+        let mut manager = MacroManager::with_path(Some(path.clone()));
+        manager.reload().unwrap();
+        assert!(manager.get("reset").is_some());
+
+        fs::write(&path, "[[macros]\nname =").unwrap();
+        let error = manager.reload().unwrap_err();
+
+        assert!(error.contains("failed to parse macros"));
+        assert!(manager.get("reset").is_some());
+        let _ = fs::remove_file(path);
     }
 }

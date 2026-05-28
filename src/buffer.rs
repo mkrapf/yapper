@@ -43,7 +43,9 @@ pub struct ScrollbackBuffer {
     max_lines: usize,
     /// Partial line being accumulated (not yet terminated by newline).
     partial: String,
+    partial_text_bytes: Vec<u8>,
     partial_raw: Vec<u8>,
+    pending_cr: bool,
 }
 
 impl ScrollbackBuffer {
@@ -52,7 +54,9 @@ impl ScrollbackBuffer {
             lines: VecDeque::with_capacity(max_lines.min(1024)),
             max_lines,
             partial: String::new(),
+            partial_text_bytes: Vec::new(),
             partial_raw: Vec::new(),
+            pending_cr: false,
         }
     }
 
@@ -60,13 +64,16 @@ impl ScrollbackBuffer {
     /// partial lines until a newline is received.
     pub fn push_bytes(&mut self, data: &[u8]) {
         for &byte in data {
+            if self.pending_cr && byte != b'\n' {
+                self.commit_line(LineEnding::Cr);
+            }
+
             self.partial_raw.push(byte);
 
             match byte {
                 b'\n' => {
-                    // Check if this is \r\n
-                    let line_ending = if self.partial.ends_with('\r') {
-                        self.partial.pop(); // remove the \r from text
+                    let line_ending = if self.pending_cr {
+                        self.pending_cr = false;
                         LineEnding::CrLf
                     } else {
                         LineEnding::Lf
@@ -74,33 +81,11 @@ impl ScrollbackBuffer {
                     self.commit_line(line_ending);
                 }
                 b'\r' => {
-                    // Could be \r alone or start of \r\n.
-                    // We handle \r\n in the \n branch above.
-                    // For standalone \r, we'll commit on the *next* byte
-                    // if it's not \n. For now, just add to partial.
-                    self.partial.push('\r');
+                    self.pending_cr = true;
                 }
                 byte => {
-                    // If we have a pending \r and this byte isn't \n,
-                    // commit the previous line as CR-terminated.
-                    if self.partial.ends_with('\r') {
-                        let cr_text: String = self.partial[..self.partial.len() - 1].to_string();
-                        let cr_raw = self.partial_raw[..self.partial_raw.len() - 1].to_vec();
-                        self.partial = String::new();
-                        self.partial_raw = vec![byte];
-
-                        self.push_line(LineEntry {
-                            text: cr_text,
-                            timestamp: Local::now(),
-                            raw_bytes: cr_raw,
-                            line_ending: LineEnding::Cr,
-                            is_sent: false,
-                        });
-
-                        self.partial.push(byte as char);
-                    } else {
-                        self.partial.push(byte as char);
-                    }
+                    self.partial_text_bytes.push(byte);
+                    self.partial = String::from_utf8_lossy(&self.partial_text_bytes).into_owned();
                 }
             }
         }
@@ -108,7 +93,9 @@ impl ScrollbackBuffer {
 
     fn commit_line(&mut self, line_ending: LineEnding) {
         let text = std::mem::take(&mut self.partial);
+        self.partial_text_bytes.clear();
         let raw = std::mem::take(&mut self.partial_raw);
+        self.pending_cr = false;
         self.push_line(LineEntry {
             text,
             timestamp: Local::now(),
@@ -142,7 +129,7 @@ impl ScrollbackBuffer {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.lines.is_empty() && self.partial.is_empty()
+        self.lines.is_empty() && self.partial.is_empty() && !self.pending_cr
     }
 
     /// Get a specific line by index.
@@ -152,7 +139,7 @@ impl ScrollbackBuffer {
 
     /// Get the current partial (unterminated) line, if any.
     pub fn partial_line(&self) -> Option<&str> {
-        if self.partial.is_empty() {
+        if self.partial.is_empty() && !self.pending_cr {
             None
         } else {
             Some(&self.partial)
@@ -161,7 +148,12 @@ impl ScrollbackBuffer {
 
     /// Total number of displayable lines (complete + partial).
     pub fn display_len(&self) -> usize {
-        self.lines.len() + if self.partial.is_empty() { 0 } else { 1 }
+        self.lines.len()
+            + if self.partial.is_empty() && !self.pending_cr {
+                0
+            } else {
+                1
+            }
     }
 
     pub fn max_lines(&self) -> usize {
@@ -177,7 +169,9 @@ impl ScrollbackBuffer {
     pub fn clear(&mut self) {
         self.lines.clear();
         self.partial.clear();
+        self.partial_text_bytes.clear();
         self.partial_raw.clear();
+        self.pending_cr = false;
     }
 }
 
@@ -249,6 +243,25 @@ mod tests {
         assert_eq!(buf.get(0).unwrap().text, "hello");
         assert_eq!(buf.get(0).unwrap().line_ending, LineEnding::CrLf);
         assert_eq!(buf.get(1).unwrap().text, "world");
+    }
+
+    #[test]
+    fn test_utf8_split_across_chunks() {
+        let mut buf = ScrollbackBuffer::new(100);
+        buf.push_bytes(&[0xc3]);
+        buf.push_bytes(&[0xa9, b'\n']);
+
+        assert_eq!(buf.get(0).unwrap().text, "é");
+        assert_eq!(buf.get(0).unwrap().raw_bytes, vec![0xc3, 0xa9, b'\n']);
+    }
+
+    #[test]
+    fn test_invalid_utf8_uses_replacement_character() {
+        let mut buf = ScrollbackBuffer::new(100);
+        buf.push_bytes(b"ok \xff\n");
+
+        assert_eq!(buf.get(0).unwrap().text, "ok �");
+        assert_eq!(buf.get(0).unwrap().raw_bytes, b"ok \xff\n");
     }
 
     #[test]

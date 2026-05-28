@@ -2,7 +2,9 @@
 
 mod app;
 mod buffer;
+mod clipboard;
 mod config;
+mod display;
 mod event;
 mod filter;
 mod hex;
@@ -69,7 +71,8 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let app_config = config::AppConfig::load();
+    let config_load = config::AppConfig::load_with_diagnostics();
+    let app_config = config_load.config;
     let startup_port = resolve_startup_port(&cli, &app_config);
 
     // Setup terminal
@@ -91,6 +94,9 @@ fn main() -> Result<()> {
     let line_ending = effective_defaults.to_line_ending();
 
     let mut app = App::new(serial_config, line_ending.to_string(), app_config.clone());
+    if let Some(warning) = config_load.warning {
+        app.add_status_warning(warning);
+    }
 
     // Connect: CLI port takes priority, then auto-connect to last port
     if let Some(port) = startup_port.as_deref() {

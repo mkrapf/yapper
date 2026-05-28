@@ -96,7 +96,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, layout_mode: WidthMode) 
             ConnectionState::Error(msg) => {
                 spans.push(Span::styled("Error: ", Theme::status_error()));
                 spans.push(Span::styled(
-                    truncate(msg, area.width as usize - 20),
+                    truncate(msg, (area.width as usize).saturating_sub(20)),
                     Theme::status_error(),
                 ));
             }
@@ -139,11 +139,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, layout_mode: WidthMode) 
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max_len.saturating_sub(1)])
-    }
+    crate::display::truncate_width(s, max_len)
 }
 
 fn port_budget(width: u16, mode: WidthMode) -> usize {
@@ -160,5 +156,16 @@ fn format_duration(duration: std::time::Duration) -> String {
         format!("{:.1}s", duration.as_secs_f64())
     } else {
         format!("{}ms", duration.as_millis())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_uses_display_width() {
+        assert_eq!(truncate("abcdef", 4), "abc…");
+        assert_eq!(truncate("a界bc", 4), "a界…");
     }
 }

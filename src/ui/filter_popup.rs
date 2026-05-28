@@ -116,10 +116,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let input_row = inner.y
         + (filter_count as u16).min(inner.height.saturating_sub(4))
         + if descriptions.is_empty() { 2 } else { 3 };
-    let input_col = inner.x
-        + 5
-        + if app.filter_mode_is_exclude { 12 } else { 12 }
-        + app.filter_input.len() as u16;
+    let input_col = inner.x + 17 + crate::display::width(&app.filter_input) as u16;
     if input_row < popup_area.bottom() && input_col < popup_area.right() {
         frame.set_cursor_position((input_col, input_row));
     }

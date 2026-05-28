@@ -13,6 +13,8 @@ pub enum SerialEvent {
     Data(Vec<u8>, Instant),
     /// The serial port encountered an error.
     Error(String),
+    /// Writing to the serial port failed.
+    WriteError(String),
     /// The serial port was disconnected.
     Disconnected,
 }
@@ -55,11 +57,12 @@ impl SerialConnection {
             .try_clone()
             .context("Failed to clone serial port for reader thread")?;
         let reader_stop = stop_flag.clone();
+        let reader_event_tx = tx.clone();
 
         let reader_handle = thread::Builder::new()
             .name(format!("serial-reader-{}", port_name))
             .spawn(move || {
-                Self::reader_loop(reader_port, tx, reader_stop);
+                Self::reader_loop(reader_port, reader_event_tx, reader_stop);
             })
             .context("Failed to spawn serial reader thread")?;
 
@@ -67,11 +70,18 @@ impl SerialConnection {
         let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
         let writer_stop = stop_flag.clone();
         let writer_tx_count = tx_count.clone();
+        let writer_event_tx = tx.clone();
         // port is moved into the writer thread — it owns the write handle
         let writer_handle = thread::Builder::new()
             .name(format!("serial-writer-{}", port_name))
             .spawn(move || {
-                Self::writer_loop(port, write_rx, writer_stop, writer_tx_count);
+                Self::writer_loop(
+                    port,
+                    write_rx,
+                    writer_stop,
+                    writer_tx_count,
+                    writer_event_tx,
+                );
             })
             .context("Failed to spawn serial writer thread")?;
 
@@ -133,6 +143,7 @@ impl SerialConnection {
         rx: mpsc::Receiver<Vec<u8>>,
         stop: Arc<AtomicBool>,
         tx_count: Arc<std::sync::atomic::AtomicU64>,
+        event_tx: Sender<SerialEvent>,
     ) {
         use std::io::Write;
 
@@ -140,10 +151,16 @@ impl SerialConnection {
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(data) => match port.write_all(&data) {
                     Ok(_) => {
-                        let _ = port.flush();
+                        if let Err(err) = port.flush() {
+                            let _ = event_tx.send(SerialEvent::WriteError(err.to_string()));
+                            break;
+                        }
                         tx_count.fetch_add(data.len() as u64, Ordering::Relaxed);
                     }
-                    Err(_) => break,
+                    Err(err) => {
+                        let _ = event_tx.send(SerialEvent::WriteError(err.to_string()));
+                        break;
+                    }
                 },
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,

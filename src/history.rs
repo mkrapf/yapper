@@ -12,6 +12,7 @@ pub struct CommandHistory {
     saved_input: String,
     /// File path for persistent storage.
     file_path: Option<PathBuf>,
+    last_error: Option<String>,
 }
 
 impl CommandHistory {
@@ -31,9 +32,10 @@ impl CommandHistory {
             position: None,
             saved_input: String::new(),
             file_path,
+            last_error: None,
         };
 
-        history.load();
+        history.last_error = history.load().err();
         history
     }
 
@@ -49,20 +51,24 @@ impl CommandHistory {
         self.file_path.as_ref()
     }
 
+    pub fn take_last_error(&mut self) -> Option<String> {
+        self.last_error.take()
+    }
+
     #[cfg(test)]
     pub fn new_in_memory(max_entries: usize) -> Self {
         Self::with_path(max_entries, None)
     }
 
     /// Add a command to history. Deduplicates consecutive entries.
-    pub fn push(&mut self, command: String) {
+    pub fn push(&mut self, command: String) -> Result<(), String> {
         if command.is_empty() {
-            return;
+            return Ok(());
         }
 
         // Don't add duplicate of the last entry
         if self.entries.last().map(|s| s.as_str()) == Some(&command) {
-            return;
+            return Ok(());
         }
 
         self.entries.push(command);
@@ -73,7 +79,7 @@ impl CommandHistory {
         }
 
         self.position = None;
-        self.save();
+        self.save()
     }
 
     /// Start navigating history. Call this before the first previous() call.
@@ -126,50 +132,54 @@ impl CommandHistory {
     }
 
     /// Load history from file.
-    fn load(&mut self) {
+    fn load(&mut self) -> Result<(), String> {
         let path = match &self.file_path {
             Some(p) => p,
-            None => return,
+            None => return Ok(()),
         };
 
         if !path.exists() {
-            return;
+            return Ok(());
         }
 
-        if let Ok(file) = fs::File::open(path) {
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    if !line.is_empty() {
-                        self.entries.push(line);
-                    }
-                }
-            }
-
-            // Trim to max
-            while self.entries.len() > self.max_entries {
-                self.entries.remove(0);
+        let file = fs::File::open(path)
+            .map_err(|err| format!("failed to open history {}: {}", path.display(), err))?;
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            let line =
+                line.map_err(|err| format!("failed to read history {}: {}", path.display(), err))?;
+            if !line.is_empty() {
+                self.entries.push(line);
             }
         }
+
+        // Trim to max
+        while self.entries.len() > self.max_entries {
+            self.entries.remove(0);
+        }
+        Ok(())
     }
 
     /// Save history to file.
-    fn save(&self) {
+    fn save(&self) -> Result<(), String> {
         let path = match &self.file_path {
             Some(p) => p,
-            None => return,
+            None => return Ok(()),
         };
 
         // Create parent directories
         if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create {}: {}", parent.display(), err))?;
         }
 
-        if let Ok(mut file) = fs::File::create(path) {
-            for entry in &self.entries {
-                let _ = writeln!(file, "{}", entry);
-            }
+        let mut file = fs::File::create(path)
+            .map_err(|err| format!("failed to write history {}: {}", path.display(), err))?;
+        for entry in &self.entries {
+            writeln!(file, "{}", entry)
+                .map_err(|err| format!("failed to write history {}: {}", path.display(), err))?;
         }
+        Ok(())
     }
 
     /// Suggest a completion from history matching the given prefix.
@@ -203,7 +213,7 @@ impl CommandHistory {
             *freq.entry(entry.as_str()).or_insert(0) += 1;
         }
         let mut sorted: Vec<_> = freq.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         sorted
             .into_iter()
             .take(n)
@@ -215,6 +225,15 @@ impl CommandHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_path(prefix: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("yapper-history-test-{}-{}", prefix, suffix))
+    }
 
     fn test_history() -> CommandHistory {
         CommandHistory {
@@ -223,15 +242,16 @@ mod tests {
             position: None,
             saved_input: String::new(),
             file_path: None, // No persistence in tests
+            last_error: None,
         }
     }
 
     #[test]
     fn test_push_and_navigate() {
         let mut h = test_history();
-        h.push("cmd1".to_string());
-        h.push("cmd2".to_string());
-        h.push("cmd3".to_string());
+        h.push("cmd1".to_string()).unwrap();
+        h.push("cmd2".to_string()).unwrap();
+        h.push("cmd3".to_string()).unwrap();
 
         assert_eq!(h.previous(""), Some("cmd3"));
         assert_eq!(h.previous(""), Some("cmd2"));
@@ -248,24 +268,24 @@ mod tests {
     #[test]
     fn test_dedup_consecutive() {
         let mut h = test_history();
-        h.push("cmd1".to_string());
-        h.push("cmd1".to_string());
-        h.push("cmd2".to_string());
+        h.push("cmd1".to_string()).unwrap();
+        h.push("cmd1".to_string()).unwrap();
+        h.push("cmd2".to_string()).unwrap();
         assert_eq!(h.len(), 2);
     }
 
     #[test]
     fn test_empty_not_added() {
         let mut h = test_history();
-        h.push("".to_string());
+        h.push("".to_string()).unwrap();
         assert_eq!(h.len(), 0);
     }
 
     #[test]
     fn test_saves_current_input() {
         let mut h = test_history();
-        h.push("cmd1".to_string());
-        h.push("cmd2".to_string());
+        h.push("cmd1".to_string()).unwrap();
+        h.push("cmd2".to_string()).unwrap();
 
         // User is typing "partial" when they press ↑
         assert_eq!(h.previous("partial"), Some("cmd2"));
@@ -280,9 +300,21 @@ mod tests {
         let mut h = test_history();
         h.max_entries = 3;
         for i in 0..5 {
-            h.push(format!("cmd{}", i));
+            h.push(format!("cmd{}", i)).unwrap();
         }
         assert_eq!(h.len(), 3);
         assert_eq!(h.previous(""), Some("cmd4"));
+    }
+
+    #[test]
+    fn test_push_reports_failed_save() {
+        let path = unique_temp_path("dir");
+        fs::create_dir_all(&path).unwrap();
+        let mut h = CommandHistory::with_path(10, Some(path.clone()));
+
+        let error = h.push("cmd".to_string()).unwrap_err();
+
+        assert!(error.contains("failed to write history"));
+        let _ = fs::remove_dir_all(path);
     }
 }

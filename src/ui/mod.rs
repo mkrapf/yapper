@@ -136,7 +136,10 @@ fn render_search_bar(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 
     if is_active {
-        frame.set_cursor_position((area.x + 2 + app.search.query.len() as u16, area.y));
+        frame.set_cursor_position((
+            area.x + 2 + crate::display::width(&app.search.query) as u16,
+            area.y,
+        ));
     }
 }
 

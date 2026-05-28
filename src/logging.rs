@@ -57,7 +57,6 @@ impl SessionLogger {
 
         let file = OpenOptions::new()
             .create(true)
-            .write(true)
             .append(true)
             .open(&path)
             .map_err(|e| format!("Failed to create log file: {}", e))?;

@@ -22,11 +22,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, layout_mode: WidthMode) 
         spans.push(Span::styled(format!("F{}", i + 1), Theme::help_key()));
         spans.push(Span::styled(":", Theme::help_bar()));
         // Truncate long commands
-        let display = if max_len > 0 && cmd.len() > max_len {
-            format!("{}…", &cmd[..max_len.saturating_sub(1)])
-        } else {
-            cmd.clone()
-        };
+        let display = command_label(cmd, max_len);
         spans.push(Span::styled(display, Theme::status_baud()));
     }
 
@@ -46,4 +42,19 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, layout_mode: WidthMode) 
     let line = Line::from(spans);
     let paragraph = Paragraph::new(line).style(Theme::help_bar());
     frame.render_widget(paragraph, area);
+}
+
+fn command_label(cmd: &str, max_len: usize) -> String {
+    crate::display::truncate_width(cmd, max_len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_command_label_truncates_by_display_width() {
+        assert_eq!(command_label("abcdef", 4), "abc…");
+        assert_eq!(command_label("a界bc", 4), "a界…");
+    }
 }

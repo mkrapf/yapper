@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 /// Application configuration, loadable from TOML.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
     pub defaults: DefaultsConfig,
@@ -61,7 +61,7 @@ pub struct HistoryConfig {
     pub file: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QuicksendConfig {
     pub recent: Vec<String>,
@@ -78,18 +78,9 @@ pub struct ConnectionConfig {
     pub port_profiles: BTreeMap<String, DefaultsConfig>,
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            defaults: DefaultsConfig::default(),
-            display: DisplayConfig::default(),
-            behavior: BehaviorConfig::default(),
-            logging: LoggingConfig::default(),
-            history: HistoryConfig::default(),
-            quicksend: QuicksendConfig::default(),
-            connection: ConnectionConfig::default(),
-        }
-    }
+pub struct ConfigLoad {
+    pub config: AppConfig,
+    pub warning: Option<String>,
 }
 
 impl Default for DefaultsConfig {
@@ -147,12 +138,6 @@ impl Default for HistoryConfig {
     }
 }
 
-impl Default for QuicksendConfig {
-    fn default() -> Self {
-        Self { recent: Vec::new() }
-    }
-}
-
 impl Default for ConnectionConfig {
     fn default() -> Self {
         Self {
@@ -166,30 +151,60 @@ impl Default for ConnectionConfig {
 impl AppConfig {
     /// Load config from the default XDG path, falling back to defaults.
     pub fn load() -> Self {
-        if let Some(config_dir) = dirs::config_dir() {
-            let config_path = config_dir.join("yapper").join("config.toml");
-            if config_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&config_path) {
-                    if let Ok(config) = toml::from_str(&content) {
-                        return config;
-                    }
-                }
-            }
+        Self::load_with_diagnostics().config
+    }
+
+    pub fn load_with_diagnostics() -> ConfigLoad {
+        let Some(config_dir) = dirs::config_dir() else {
+            return ConfigLoad {
+                config: Self::default(),
+                warning: Some("Config warning: could not determine config directory".to_string()),
+            };
+        };
+
+        let config_path = config_dir.join("yapper").join("config.toml");
+        if !config_path.exists() {
+            return ConfigLoad {
+                config: Self::default(),
+                warning: None,
+            };
         }
-        Self::default()
+
+        match Self::load_from_path(&config_path) {
+            Ok(config) => ConfigLoad {
+                config,
+                warning: None,
+            },
+            Err(err) => ConfigLoad {
+                config: Self::default(),
+                warning: Some(format!("Config warning: {}; using defaults", err)),
+            },
+        }
+    }
+
+    pub fn load_from_path(path: &Path) -> Result<Self, String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|err| format!("failed to read {}: {}", path.display(), err))?;
+        toml::from_str(&content)
+            .map_err(|err| format!("failed to parse {}: {}", path.display(), err))
     }
 
     /// Save config to the default XDG path.
-    pub fn save(&self) {
-        if let Some(config_dir) = dirs::config_dir() {
-            let config_path = config_dir.join("yapper").join("config.toml");
-            if let Some(parent) = config_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(content) = toml::to_string_pretty(self) {
-                let _ = std::fs::write(config_path, content);
-            }
+    pub fn save(&self) -> Result<(), String> {
+        let config_dir =
+            dirs::config_dir().ok_or_else(|| "could not determine config directory".to_string())?;
+        self.save_to_path(&config_dir.join("yapper").join("config.toml"))
+    }
+
+    pub fn save_to_path(&self, path: &Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create {}: {}", parent.display(), err))?;
         }
+        let content = toml::to_string_pretty(self)
+            .map_err(|err| format!("failed to encode config: {}", err))?;
+        std::fs::write(path, content)
+            .map_err(|err| format!("failed to write {}: {}", path.display(), err))
     }
 }
 
@@ -309,6 +324,15 @@ pub fn expand_path(path: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_path(prefix: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("yapper-config-test-{}-{}", prefix, suffix))
+    }
 
     #[test]
     fn test_default_config() {
@@ -386,5 +410,27 @@ mod tests {
                 .line_ending,
             "lf"
         );
+    }
+
+    #[test]
+    fn test_load_from_path_reports_malformed_config() {
+        let path = unique_temp_path("bad.toml");
+        std::fs::write(&path, "[defaults\nbaud_rate = 9600").unwrap();
+
+        let error = AppConfig::load_from_path(&path).unwrap_err();
+
+        assert!(error.contains("failed to parse"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_save_to_path_reports_failed_write() {
+        let path = unique_temp_path("dir");
+        std::fs::create_dir_all(&path).unwrap();
+
+        let error = AppConfig::default().save_to_path(&path).unwrap_err();
+
+        assert!(error.contains("failed to write"));
+        let _ = std::fs::remove_dir_all(path);
     }
 }

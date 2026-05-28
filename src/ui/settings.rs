@@ -31,7 +31,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let config = &app.serial_config;
     let selected = app.settings_field;
 
-    let fields = vec![
+    let fields = [
         ("Baud Rate", format!("◂ {} ▸", config.baud_rate)),
         (
             "Data Bits",

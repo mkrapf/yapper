@@ -50,13 +50,15 @@ pub struct HexLine {
     pub byte_count: usize,
 }
 
-impl HexLine {
-    /// Format as a complete display line.
-    pub fn to_string(&self) -> String {
-        // Pad hex sections to fixed width
+impl std::fmt::Display for HexLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let left = format!("{:<23}", self.hex_left);
         let right = format!("{:<23}", self.hex_right);
-        format!("{:08x}  {} {} |{}|", self.offset, left, right, self.ascii)
+        write!(
+            f,
+            "{:08x}  {} {} |{}|",
+            self.offset, left, right, self.ascii
+        )
     }
 }
 

@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crate::buffer::ScrollbackBuffer;
@@ -12,7 +12,14 @@ use crate::mouse::{LayoutRegions, TextSelection};
 use crate::search::Search;
 use crate::serial::config::SerialConfig;
 use crate::serial::connection::{SerialConnection, SerialEvent};
-use crate::serial::detector::{self, PortInfo};
+use crate::serial::detector::PortInfo;
+
+mod connection_flow;
+mod filters;
+mod input_editing;
+mod macro_runner;
+mod scroll_search;
+mod settings_flow;
 
 /// The application mode determines how keyboard input is handled.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -191,15 +198,17 @@ pub struct App {
 
 impl App {
     pub fn new(serial_config: SerialConfig, line_ending: String, app_config: AppConfig) -> Self {
-        let history =
+        let mut history =
             CommandHistory::from_config(app_config.history.max_entries, &app_config.history.file);
+        let history_warning = history.take_last_error();
         let quicksend = Self::sanitize_quicksend(app_config.quicksend.recent.clone());
         let logger = SessionLogger::from_config(
             &app_config.logging.log_directory,
             &app_config.logging.log_format,
         );
-        let macros = MacroManager::new();
-        Self::build(
+        let mut macros = MacroManager::new();
+        let macro_warning = macros.take_last_error();
+        let mut app = Self::build(
             serial_config,
             line_ending,
             app_config,
@@ -207,7 +216,14 @@ impl App {
             logger,
             macros,
             quicksend,
-        )
+        );
+        if let Some(warning) = history_warning {
+            app.add_status_warning(format!("History warning: {}", warning));
+        }
+        if let Some(warning) = macro_warning {
+            app.add_status_warning(format!("Macro warning: {}", warning));
+        }
+        app
     }
 
     fn build(
@@ -322,7 +338,7 @@ impl App {
 
     fn save_global_defaults(&mut self) {
         self.app_config.defaults = self.current_defaults_profile();
-        self.app_config.save();
+        self.save_app_config();
     }
 
     fn save_port_profile(&mut self, port_name: &str) {
@@ -330,7 +346,13 @@ impl App {
             .connection
             .port_profiles
             .insert(port_name.to_string(), self.current_defaults_profile());
-        self.app_config.save();
+        self.save_app_config();
+    }
+
+    fn save_app_config(&mut self) {
+        if let Err(err) = self.app_config.save() {
+            self.set_status(format!("Config save error: {}", err));
+        }
     }
 
     fn promote_quicksend(&mut self, command: &str) {
@@ -343,41 +365,7 @@ impl App {
         self.quicksend.insert(0, command.to_string());
         self.quicksend.truncate(8);
         self.app_config.quicksend.recent = self.quicksend.clone();
-        self.app_config.save();
-    }
-
-    fn reset_reconnect_state(&mut self) {
-        self.reconnect_port = None;
-        self.reconnect_current_delay = self.reconnect_delay.min(MAX_RECONNECT_DELAY);
-        self.reconnect_next_attempt = None;
-        self.reconnect_attempts = 0;
-    }
-
-    fn schedule_reconnect(&mut self, port_name: String, now: Instant) {
-        self.reconnect_port = Some(port_name.clone());
-        self.reconnect_current_delay = self.reconnect_delay.min(MAX_RECONNECT_DELAY);
-        self.reconnect_next_attempt = Some(now + self.reconnect_current_delay);
-        self.reconnect_attempts = 0;
-        self.connection_state = ConnectionState::Reconnecting(port_name);
-    }
-
-    fn handle_connection_loss(&mut self, port_name: String, error_message: String, now: Instant) {
-        self.disconnect_internal(true);
-        if self.auto_reconnect && !port_name.is_empty() {
-            self.schedule_reconnect(port_name, now);
-        } else {
-            self.connection_state = ConnectionState::Error(error_message);
-        }
-    }
-
-    pub fn reconnect_status(&self, now: Instant) -> Option<(usize, Duration)> {
-        if !matches!(self.connection_state, ConnectionState::Reconnecting(_)) {
-            return None;
-        }
-
-        let next_attempt = self.reconnect_next_attempt?;
-        let remaining = next_attempt.saturating_duration_since(now);
-        Some((self.reconnect_attempts + 1, remaining))
+        self.save_app_config();
     }
 
     pub fn rerun_last_macro(&mut self) {
@@ -399,88 +387,19 @@ impl App {
             return;
         }
 
-        self.macros.reload();
-        let macro_count = self.macros.list().len();
-        if macro_count == 0 {
-            self.macro_select_index = 0;
-        } else if self.macro_select_index >= macro_count {
-            self.macro_select_index = macro_count - 1;
-        }
-        self.set_status("Macros reloaded".to_string());
-    }
-
-    /// Connect to the specified serial port.
-    pub fn connect(&mut self, port_name: &str) {
-        // Disconnect first if already connected
-        self.disconnect_internal(false);
-        self.reset_reconnect_state();
-
-        let (tx, rx) = mpsc::channel();
-
-        match SerialConnection::open(port_name, &self.serial_config, tx.clone()) {
-            Ok(conn) => {
-                self.connection_state = ConnectionState::Connected(port_name.to_string());
-                self.connection = Some(conn);
-                self.serial_rx = Some(rx);
-                self.serial_tx = Some(tx);
-                self.set_status(format!("Connected to {}", port_name));
-                // Save last port for auto-connect on next launch
-                self.app_config.connection.last_port = Some(port_name.to_string());
-                self.app_config.save();
-                self.ensure_auto_logging();
+        match self.macros.reload() {
+            Ok(()) => {
+                let macro_count = self.macros.list().len();
+                if macro_count == 0 {
+                    self.macro_select_index = 0;
+                } else if self.macro_select_index >= macro_count {
+                    self.macro_select_index = macro_count - 1;
+                }
+                self.set_status("Macros reloaded".to_string());
             }
-            Err(e) => {
-                self.connection_state = ConnectionState::Error(e.to_string());
+            Err(err) => {
+                self.set_status(format!("Macro reload error: {}", err));
             }
-        }
-    }
-
-    /// Internal disconnect, optionally preserving reconnect state.
-    fn disconnect_internal(&mut self, keep_reconnect: bool) {
-        if let Some(conn) = self.connection.take() {
-            self.rx_bytes += conn.rx_bytes;
-            self.tx_bytes += conn.tx_bytes();
-            conn.close();
-        }
-        self.serial_rx = None;
-        self.serial_tx = None;
-        if !keep_reconnect {
-            self.connection_state = ConnectionState::Disconnected;
-            self.reset_reconnect_state();
-        }
-    }
-
-    /// Disconnect from the current serial port.
-    pub fn disconnect(&mut self) {
-        self.disconnect_internal(false);
-        self.set_status("Disconnected".to_string());
-    }
-
-    /// Toggle connection: disconnect if connected, open port selector if not.
-    pub fn toggle_connection(&mut self) {
-        match &self.connection_state {
-            ConnectionState::Connected(_) => {
-                self.disconnect();
-            }
-            ConnectionState::Reconnecting(_) => {
-                // Cancel reconnection
-                self.reset_reconnect_state();
-                self.connection_state = ConnectionState::Disconnected;
-                self.set_status("Reconnection cancelled".to_string());
-            }
-            _ => {
-                self.open_port_selector();
-            }
-        }
-    }
-
-    fn ensure_auto_logging(&mut self) {
-        if !self.app_config.logging.auto_log || self.logger.is_active {
-            return;
-        }
-
-        if let Err(err) = self.logger.start() {
-            self.set_status(format!("Log error: {}", err));
         }
     }
 
@@ -518,14 +437,10 @@ impl App {
                                 self.tx_bytes = conn.tx_bytes();
                                 self.last_command_sent = Some(Instant::now());
                             }
-                            Err(_) => {
-                                self.connection_state =
-                                    ConnectionState::Error("Write failed".to_string());
-                            }
+                            Err(err) => self.handle_write_error(err.to_string()),
                         }
                     }
-                    self.history.push(text);
-                    self.history.reset_navigation();
+                    self.record_history(text);
                 }
                 Err(e) => {
                     self.set_status(format!("Hex parse error: {}", e));
@@ -562,342 +477,17 @@ impl App {
                     self.tx_bytes = conn.tx_bytes();
                     self.last_command_sent = Some(Instant::now());
                 }
-                Err(_) => {
-                    self.connection_state = ConnectionState::Error("Write failed".to_string());
-                }
+                Err(err) => self.handle_write_error(err.to_string()),
             }
         }
 
         if source != SendSource::Macro {
-            self.history.push(text.to_string());
-            self.history.reset_navigation();
+            self.record_history(text.to_string());
         }
 
         if source == SendSource::Manual {
             self.promote_quicksend(text);
         }
-    }
-
-    /// Poll for serial events. Returns true if anything happened (needs re-render).
-    pub fn poll_serial(&mut self) -> bool {
-        let mut changed = false;
-
-        let rx = match &self.serial_rx {
-            Some(rx) => rx,
-            None => return changed,
-        };
-
-        // Drain all available events
-        loop {
-            match rx.try_recv() {
-                Ok(SerialEvent::Data(data, received_at)) => {
-                    self.rx_bytes += data.len() as u64;
-                    self.logger.log_bytes(&data);
-                    self.buffer.push_bytes(&data);
-                    if self.follow_output {
-                        self.scroll_offset = 0;
-                    }
-                    // Measure response time using reader-thread timestamp
-                    if let Some(sent_at) = self.last_command_sent.take() {
-                        self.last_response_time = Some(received_at.duration_since(sent_at));
-                    }
-                    changed = true;
-                }
-                Ok(SerialEvent::Disconnected) => {
-                    let port = match &self.connection_state {
-                        ConnectionState::Connected(p) => p.clone(),
-                        _ => String::new(),
-                    };
-                    self.handle_connection_loss(
-                        port,
-                        "Port disconnected".to_string(),
-                        Instant::now(),
-                    );
-                    changed = true;
-                    break;
-                }
-                Ok(SerialEvent::Error(e)) => {
-                    let port = match &self.connection_state {
-                        ConnectionState::Connected(p) => p.clone(),
-                        _ => String::new(),
-                    };
-                    self.handle_connection_loss(port, e, Instant::now());
-                    changed = true;
-                    break;
-                }
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    let port = match &self.connection_state {
-                        ConnectionState::Connected(p) => p.clone(),
-                        _ => String::new(),
-                    };
-                    self.handle_connection_loss(
-                        port,
-                        "Reader thread died".to_string(),
-                        Instant::now(),
-                    );
-                    changed = true;
-                    break;
-                }
-            }
-        }
-
-        changed
-    }
-
-    /// Run time-based background work. Returns true if state changed.
-    pub fn tick(&mut self, now: Instant) -> bool {
-        let mut changed = false;
-
-        if let Some((_, time)) = &self.status_message {
-            if time.elapsed() > Duration::from_secs(3) {
-                self.status_message = None;
-                changed = true;
-            }
-        }
-
-        if self.try_reconnect(now) {
-            changed = true;
-        }
-
-        if self.drain_macro_queue(now) {
-            changed = true;
-        }
-
-        changed
-    }
-
-    /// Attempt auto-reconnect if conditions are met.
-    fn try_reconnect(&mut self, now: Instant) -> bool {
-        let port = match &self.reconnect_port {
-            Some(p) => p.clone(),
-            None => return false,
-        };
-
-        if !matches!(self.connection_state, ConnectionState::Reconnecting(_)) {
-            return false;
-        }
-
-        let next_attempt = match self.reconnect_next_attempt {
-            Some(next_attempt) => next_attempt,
-            None => return false,
-        };
-        if now < next_attempt {
-            return false;
-        }
-
-        let (tx, rx) = mpsc::channel();
-        match SerialConnection::open(&port, &self.serial_config, tx.clone()) {
-            Ok(conn) => {
-                self.reset_reconnect_state();
-                self.connection_state = ConnectionState::Connected(port.clone());
-                self.connection = Some(conn);
-                self.serial_rx = Some(rx);
-                self.serial_tx = Some(tx);
-                self.set_status(format!("Reconnected to {}", port));
-                self.app_config.connection.last_port = Some(port.clone());
-                self.app_config.save();
-                self.ensure_auto_logging();
-                true
-            }
-            Err(_) => {
-                self.reconnect_attempts += 1;
-                self.reconnect_current_delay =
-                    (self.reconnect_current_delay.saturating_mul(2)).min(MAX_RECONNECT_DELAY);
-                self.reconnect_next_attempt = Some(now + self.reconnect_current_delay);
-                false
-            }
-        }
-    }
-
-    /// Auto-detect the baud rate for a given port.
-    pub fn auto_detect_baud(&mut self, port_name: &str) {
-        self.set_status("Auto-detecting baud rate...".to_string());
-        match crate::serial::auto_detect::auto_detect_baud(port_name) {
-            Some(rate) => {
-                self.apply_detected_baud(port_name, rate);
-                self.set_status(format!("Detected baud rate: {}", rate));
-            }
-            None => {
-                self.set_status("Could not detect baud rate — no readable data".to_string());
-            }
-        }
-    }
-
-    fn apply_detected_baud(&mut self, port_name: &str, rate: u32) {
-        self.serial_config.baud_rate = rate;
-        self.save_port_profile(port_name);
-    }
-
-    /// Open the port selector popup.
-    pub fn open_port_selector(&mut self) {
-        self.available_ports = detector::available_ports();
-        self.port_select_index = 0;
-        self.open_overlay(Mode::PortSelect);
-    }
-
-    /// Connect to the currently selected port in the selector.
-    pub fn connect_selected_port(&mut self) {
-        if let Some(port) = self.available_ports.get(self.port_select_index) {
-            let port_name = port.name.clone();
-            self.load_port_profile(&port_name);
-            self.restore_mode();
-            self.connect(&port_name);
-        }
-    }
-
-    // ── Scrolling ───────────────────────────────────────
-
-    pub fn scroll_up(&mut self, lines: usize) {
-        let view_height = self.layout.terminal_view.3 as usize; // height from layout
-        let max_scroll = self.buffer.display_len().saturating_sub(view_height);
-        self.scroll_offset = (self.scroll_offset + lines).min(max_scroll);
-        if max_scroll > 0 {
-            self.follow_output = false;
-        }
-    }
-
-    pub fn scroll_down(&mut self, lines: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
-        if self.scroll_offset == 0 {
-            self.follow_output = true;
-        }
-    }
-
-    pub fn scroll_to_bottom(&mut self) {
-        self.scroll_offset = 0;
-        self.follow_output = true;
-    }
-
-    pub fn scroll_to_top(&mut self) {
-        let max_scroll = self.buffer.display_len().saturating_sub(1);
-        self.scroll_offset = max_scroll;
-        self.follow_output = false;
-    }
-
-    /// Scroll to show a specific line index.
-    pub fn scroll_to_line(&mut self, line_index: usize) {
-        let total = self.buffer.display_len();
-        if total == 0 {
-            return;
-        }
-        // scroll_offset is distance from bottom
-        self.scroll_offset = total.saturating_sub(line_index + 1);
-        self.follow_output = false;
-    }
-
-    // ── Input editing ───────────────────────────────────
-
-    pub fn input_char(&mut self, c: char) {
-        self.input_text.insert(self.input_cursor, c);
-        self.input_cursor += 1;
-        self.update_ghost();
-    }
-
-    pub fn input_backspace(&mut self) {
-        if self.input_cursor > 0 {
-            self.input_cursor -= 1;
-            self.input_text.remove(self.input_cursor);
-            self.update_ghost();
-        }
-    }
-
-    pub fn input_delete(&mut self) {
-        if self.input_cursor < self.input_text.len() {
-            self.input_text.remove(self.input_cursor);
-            self.update_ghost();
-        }
-    }
-
-    pub fn input_cursor_left(&mut self) {
-        self.input_cursor = self.input_cursor.saturating_sub(1);
-    }
-
-    pub fn input_cursor_right(&mut self) {
-        self.input_cursor = (self.input_cursor + 1).min(self.input_text.len());
-    }
-
-    pub fn input_cursor_home(&mut self) {
-        self.input_cursor = 0;
-    }
-
-    pub fn input_cursor_end(&mut self) {
-        self.input_cursor = self.input_text.len();
-    }
-
-    /// Update the ghost auto-complete suggestion from history.
-    pub fn update_ghost(&mut self) {
-        // Only suggest when cursor is at the end of input
-        if self.input_cursor != self.input_text.len() || self.input_text.is_empty() {
-            self.ghost_suggestion = None;
-            return;
-        }
-        self.ghost_suggestion = self
-            .history
-            .suggest(&self.input_text)
-            .map(|s| s.to_string());
-    }
-
-    /// Accept the current ghost suggestion, filling in the input text.
-    pub fn accept_suggestion(&mut self) {
-        if let Some(suggestion) = self.ghost_suggestion.take() {
-            self.input_text = suggestion;
-            self.input_cursor = self.input_text.len();
-        }
-    }
-
-    // ── History navigation ──────────────────────────────
-
-    pub fn history_previous(&mut self) {
-        if let Some(text) = self.history.previous(&self.input_text) {
-            self.input_text = text.to_string();
-            self.input_cursor = self.input_text.len();
-        }
-    }
-
-    pub fn history_next(&mut self) {
-        if let Some(text) = self.history.next() {
-            self.input_text = text.to_string();
-            self.input_cursor = self.input_text.len();
-        }
-    }
-
-    // ── Search ──────────────────────────────────────────
-
-    pub fn start_search(&mut self) {
-        self.search.activate();
-        self.open_overlay(Mode::Search);
-    }
-
-    pub fn search_char(&mut self, c: char) {
-        self.search.push_char(c);
-        self.search.execute(&self.buffer);
-        // Jump to current match
-        if let Some(line) = self.search.current_line() {
-            self.scroll_to_line(line);
-        }
-    }
-
-    pub fn search_backspace(&mut self) {
-        self.search.pop_char();
-        self.search.execute(&self.buffer);
-    }
-
-    pub fn search_next(&mut self) {
-        if let Some(line) = self.search.next_match() {
-            self.scroll_to_line(line);
-        }
-    }
-
-    pub fn search_prev(&mut self) {
-        if let Some(line) = self.search.prev_match() {
-            self.scroll_to_line(line);
-        }
-    }
-
-    pub fn end_search(&mut self) {
-        self.search.deactivate();
-        self.restore_mode();
     }
 
     // ── Toggles ─────────────────────────────────────────
@@ -943,6 +533,21 @@ impl App {
         self.set_status(msg);
     }
 
+    pub fn add_status_warning(&mut self, msg: String) {
+        let combined = match self.status_message.take() {
+            Some((current, _)) => format!("{}; {}", current, msg),
+            None => msg,
+        };
+        self.set_status(combined);
+    }
+
+    fn record_history(&mut self, command: String) {
+        if let Err(err) = self.history.push(command) {
+            self.set_status(format!("History save error: {}", err));
+        }
+        self.history.reset_navigation();
+    }
+
     pub fn total_rx_bytes(&self) -> u64 {
         self.rx_bytes
     }
@@ -957,413 +562,6 @@ impl App {
 
     pub fn is_reconnecting(&self) -> bool {
         matches!(self.connection_state, ConnectionState::Reconnecting(_))
-    }
-
-    // ── Filter ──────────────────────────────────────────
-
-    pub fn add_filter_include(&mut self, pattern: &str) {
-        match self.filter.add_include(pattern) {
-            Ok(_) => self.set_status(format!("Filter +{}", pattern)),
-            Err(e) => self.set_status(e),
-        }
-    }
-
-    pub fn add_filter_exclude(&mut self, pattern: &str) {
-        match self.filter.add_exclude(pattern) {
-            Ok(_) => self.set_status(format!("Filter -{}", pattern)),
-            Err(e) => self.set_status(e),
-        }
-    }
-
-    pub fn clear_filters(&mut self) {
-        self.filter.clear();
-        self.set_status("Filters cleared".to_string());
-    }
-
-    /// Open the filter popup.
-    pub fn open_filter_popup(&mut self) {
-        self.filter_input.clear();
-        self.filter_select_index = 0;
-        self.open_overlay(Mode::Filter);
-    }
-
-    /// Submit the current filter input.
-    pub fn submit_filter(&mut self) {
-        if !self.filter_input.is_empty() {
-            let pattern = self.filter_input.clone();
-            if self.filter_mode_is_exclude {
-                self.add_filter_exclude(&pattern);
-            } else {
-                self.add_filter_include(&pattern);
-            }
-            self.filter_input.clear();
-        }
-        self.restore_mode();
-    }
-
-    /// Remove a filter by index.
-    pub fn remove_filter(&mut self, index: usize) {
-        self.filter.remove(index);
-        if self.filter.count() == 0 {
-            self.set_status("All filters removed".to_string());
-        }
-        // Keep select index in bounds
-        if self.filter_select_index >= self.filter.count() && self.filter_select_index > 0 {
-            self.filter_select_index -= 1;
-        }
-    }
-
-    // ── Macros ──────────────────────────────────────────
-
-    /// Open the macro selector popup.
-    pub fn open_macro_selector(&mut self) {
-        self.macro_select_index = 0;
-        self.open_overlay(Mode::MacroSelect);
-    }
-
-    pub fn open_help(&mut self) {
-        self.help_scroll = 0;
-        self.help_scroll_max = 0;
-        self.open_overlay(Mode::Help);
-    }
-
-    /// Send raw text over serial (used by macros).
-    pub fn send_text(&mut self, text: &str) {
-        self.send_plain_text(text, SendSource::Macro);
-    }
-
-    /// Execute a macro by name.
-    pub fn execute_macro(&mut self, name: &str) {
-        if self.active_macro_name.is_some() {
-            self.set_status("A macro is already running".to_string());
-            return;
-        }
-
-        if let Some(m) = self.macros.get(name) {
-            let commands = m.commands.clone();
-            if commands.is_empty() {
-                self.set_status(format!("Macro has no commands: {}", name));
-                return;
-            }
-            let mut ready_at = Instant::now();
-            let pending = commands.into_iter().map(|command| {
-                ready_at += Duration::from_millis(command.delay_ms);
-                PendingMacroCommand {
-                    text: command.text,
-                    ready_at,
-                }
-            });
-
-            self.pending_macro_commands = pending.collect();
-            self.active_macro_name = Some(name.to_string());
-            self.last_executed_macro = Some(name.to_string());
-            self.set_status(format!("Running macro: {}", name));
-        } else {
-            self.set_status(format!("Macro not found: {}", name));
-        }
-    }
-
-    /// Execute the currently selected macro.
-    pub fn execute_selected_macro(&mut self) {
-        let macros = self.macros.list();
-        if let Some(m) = macros.get(self.macro_select_index) {
-            let name = m.name.clone();
-            self.execute_macro(&name);
-        }
-    }
-
-    fn drain_macro_queue(&mut self, now: Instant) -> bool {
-        let mut changed = false;
-
-        loop {
-            let ready = match self.pending_macro_commands.front() {
-                Some(command) => command.ready_at <= now,
-                None => false,
-            };
-
-            if !ready {
-                break;
-            }
-
-            if let Some(command) = self.pending_macro_commands.pop_front() {
-                self.send_plain_text(&command.text, SendSource::Macro);
-                changed = true;
-            }
-        }
-
-        if changed && self.pending_macro_commands.is_empty() {
-            if let Some(name) = self.active_macro_name.take() {
-                self.set_status(format!("Finished macro: {}", name));
-            }
-        }
-
-        changed
-    }
-
-    // ── Settings ────────────────────────────────────────
-
-    pub fn open_settings(&mut self) {
-        self.settings_field = 0;
-        self.settings_original_config = Some(self.serial_config.clone());
-        self.settings_original_line_ending = Some(self.line_ending.clone());
-        self.open_overlay(Mode::Settings);
-    }
-
-    /// Cycle the selected settings field value forward.
-    pub fn settings_next_value(&mut self) {
-        use serialport::*;
-        match self.settings_field {
-            0 => {
-                // Baud rate: cycle through common rates
-                let rates = crate::ui::settings::BAUD_RATES;
-                let current_idx = rates
-                    .iter()
-                    .position(|&r| r == self.serial_config.baud_rate);
-                let next_idx = match current_idx {
-                    Some(i) => (i + 1) % rates.len(),
-                    None => 0,
-                };
-                self.serial_config.baud_rate = rates[next_idx];
-            }
-            1 => {
-                self.serial_config.data_bits = match self.serial_config.data_bits {
-                    DataBits::Five => DataBits::Six,
-                    DataBits::Six => DataBits::Seven,
-                    DataBits::Seven => DataBits::Eight,
-                    DataBits::Eight => DataBits::Five,
-                };
-            }
-            2 => {
-                self.serial_config.parity = match self.serial_config.parity {
-                    Parity::None => Parity::Odd,
-                    Parity::Odd => Parity::Even,
-                    Parity::Even => Parity::None,
-                };
-            }
-            3 => {
-                self.serial_config.stop_bits = match self.serial_config.stop_bits {
-                    StopBits::One => StopBits::Two,
-                    StopBits::Two => StopBits::One,
-                };
-            }
-            4 => {
-                self.serial_config.flow_control = match self.serial_config.flow_control {
-                    FlowControl::None => FlowControl::Software,
-                    FlowControl::Software => FlowControl::Hardware,
-                    FlowControl::Hardware => FlowControl::None,
-                };
-            }
-            5 => {
-                // Line ending cycle: CRLF -> LF -> CR
-                self.line_ending = match self.line_ending.as_str() {
-                    "\r\n" => "\n".to_string(),
-                    "\n" => "\r".to_string(),
-                    "\r" => "\r\n".to_string(),
-                    _ => "\r\n".to_string(),
-                };
-            }
-            _ => {}
-        }
-    }
-
-    /// Cycle the selected settings field value backward.
-    pub fn settings_prev_value(&mut self) {
-        use serialport::*;
-        match self.settings_field {
-            0 => {
-                let rates = crate::ui::settings::BAUD_RATES;
-                let current_idx = rates
-                    .iter()
-                    .position(|&r| r == self.serial_config.baud_rate);
-                let next_idx = match current_idx {
-                    Some(0) | None => rates.len() - 1,
-                    Some(i) => i - 1,
-                };
-                self.serial_config.baud_rate = rates[next_idx];
-            }
-            1 => {
-                self.serial_config.data_bits = match self.serial_config.data_bits {
-                    DataBits::Five => DataBits::Eight,
-                    DataBits::Six => DataBits::Five,
-                    DataBits::Seven => DataBits::Six,
-                    DataBits::Eight => DataBits::Seven,
-                };
-            }
-            2 => {
-                self.serial_config.parity = match self.serial_config.parity {
-                    Parity::None => Parity::Even,
-                    Parity::Odd => Parity::None,
-                    Parity::Even => Parity::Odd,
-                };
-            }
-            3 => {
-                self.serial_config.stop_bits = match self.serial_config.stop_bits {
-                    StopBits::One => StopBits::Two,
-                    StopBits::Two => StopBits::One,
-                };
-            }
-            4 => {
-                self.serial_config.flow_control = match self.serial_config.flow_control {
-                    FlowControl::None => FlowControl::Hardware,
-                    FlowControl::Software => FlowControl::None,
-                    FlowControl::Hardware => FlowControl::Software,
-                };
-            }
-            5 => {
-                // Line ending cycle backward: CRLF -> CR -> LF
-                self.line_ending = match self.line_ending.as_str() {
-                    "\r\n" => "\r".to_string(),
-                    "\n" => "\r\n".to_string(),
-                    "\r" => "\n".to_string(),
-                    _ => "\r\n".to_string(),
-                };
-            }
-            _ => {}
-        }
-    }
-
-    /// Apply settings changes: reconnect if currently connected.
-    pub fn apply_settings(&mut self) {
-        let original_config = self
-            .settings_original_config
-            .clone()
-            .unwrap_or_else(|| self.serial_config.clone());
-        let original_line_ending = self
-            .settings_original_line_ending
-            .clone()
-            .unwrap_or_else(|| self.line_ending.clone());
-        let summary = self.serial_config.summary();
-        self.set_status(format!("Settings: {}", summary));
-
-        // Persist either to the active port profile or global defaults.
-        self.sync_config_to_disk();
-
-        // If connected, reconnect with new settings
-        if let ConnectionState::Connected(port) = &self.connection_state {
-            let port = port.clone();
-            if Self::settings_require_reconnect(
-                &original_config,
-                &self.serial_config,
-                &original_line_ending,
-                &self.line_ending,
-            ) {
-                self.disconnect();
-                self.connect(&port);
-            }
-        }
-
-        self.settings_original_config = None;
-        self.settings_original_line_ending = None;
-        self.restore_mode();
-    }
-
-    pub fn cancel_settings(&mut self) {
-        if let Some(original) = self.settings_original_config.take() {
-            self.serial_config = original;
-        }
-        if let Some(original) = self.settings_original_line_ending.take() {
-            self.line_ending = original;
-        }
-        self.restore_mode();
-    }
-
-    fn settings_require_reconnect(
-        original_config: &SerialConfig,
-        current_config: &SerialConfig,
-        _original_line_ending: &str,
-        _current_line_ending: &str,
-    ) -> bool {
-        original_config != current_config
-    }
-
-    /// Sync the current serial config and line ending to app_config and save to disk.
-    fn sync_config_to_disk(&mut self) {
-        match &self.connection_state {
-            ConnectionState::Connected(port) | ConnectionState::Reconnecting(port) => {
-                let port = port.clone();
-                self.save_port_profile(&port);
-            }
-            _ => self.save_global_defaults(),
-        }
-    }
-
-    pub fn scroll_help_up(&mut self, lines: u16) {
-        self.help_scroll = self.help_scroll.saturating_sub(lines);
-    }
-
-    pub fn scroll_help_down(&mut self, lines: u16) {
-        self.help_scroll = self
-            .help_scroll
-            .saturating_add(lines)
-            .min(self.help_scroll_max);
-    }
-
-    pub fn set_help_scroll_max(&mut self, max_scroll: u16) {
-        self.help_scroll_max = max_scroll;
-        self.help_scroll = self.help_scroll.min(self.help_scroll_max);
-    }
-
-    // ── Word-level cursor ───────────────────────────────
-
-    /// Move cursor one word to the left.
-    pub fn input_cursor_word_left(&mut self) {
-        let chars: Vec<char> = self.input_text.chars().collect();
-        if self.input_cursor == 0 {
-            return;
-        }
-        let mut pos = self.input_cursor;
-        // Skip non-alphanumeric
-        while pos > 0 && !chars[pos - 1].is_alphanumeric() {
-            pos -= 1;
-        }
-        // Skip alphanumeric
-        while pos > 0 && chars[pos - 1].is_alphanumeric() {
-            pos -= 1;
-        }
-        self.input_cursor = pos;
-    }
-
-    /// Move cursor one word to the right.
-    pub fn input_cursor_word_right(&mut self) {
-        let chars: Vec<char> = self.input_text.chars().collect();
-        let len = chars.len();
-        if self.input_cursor >= len {
-            return;
-        }
-        let mut pos = self.input_cursor;
-        // Skip alphanumeric
-        while pos < len && chars[pos].is_alphanumeric() {
-            pos += 1;
-        }
-        // Skip non-alphanumeric
-        while pos < len && !chars[pos].is_alphanumeric() {
-            pos += 1;
-        }
-        self.input_cursor = pos;
-    }
-
-    /// Delete one word backward (Ctrl+W).
-    pub fn input_delete_word_back(&mut self) {
-        if self.input_cursor == 0 {
-            return;
-        }
-        let old_cursor = self.input_cursor;
-        self.input_cursor_word_left();
-        let new_cursor = self.input_cursor;
-        // Remove characters between new_cursor and old_cursor
-        let chars: Vec<char> = self.input_text.chars().collect();
-        self.input_text = chars[..new_cursor]
-            .iter()
-            .chain(chars[old_cursor..].iter())
-            .collect();
-        self.update_ghost();
-    }
-
-    /// Kill the entire input line (Ctrl+U).
-    pub fn input_kill_line(&mut self) {
-        self.input_text.clear();
-        self.input_cursor = 0;
-        self.ghost_suggestion = None;
     }
 
     // ── Hex input ───────────────────────────────────────
@@ -1385,7 +583,7 @@ impl App {
         if cleaned.is_empty() {
             return Err("Empty hex input".to_string());
         }
-        if cleaned.len() % 2 != 0 {
+        if cleaned.len() & 1 != 0 {
             return Err("Odd number of hex digits".to_string());
         }
         let mut bytes = Vec::with_capacity(cleaned.len() / 2);
@@ -1505,20 +703,22 @@ mod tests {
     #[test]
     fn test_macro_scheduler_runs_commands_over_multiple_ticks() {
         let mut app = test_app_with_config(AppConfig::default());
-        app.macros.save_macro(crate::macros::Macro {
-            name: "wifi".to_string(),
-            description: "Bring WiFi up".to_string(),
-            commands: vec![
-                crate::macros::MacroCommand {
-                    text: "AT+CWMODE=1".to_string(),
-                    delay_ms: 0,
-                },
-                crate::macros::MacroCommand {
-                    text: "AT+CWJAP".to_string(),
-                    delay_ms: 500,
-                },
-            ],
-        });
+        app.macros
+            .save_macro(crate::macros::Macro {
+                name: "wifi".to_string(),
+                description: "Bring WiFi up".to_string(),
+                commands: vec![
+                    crate::macros::MacroCommand {
+                        text: "AT+CWMODE=1".to_string(),
+                        delay_ms: 0,
+                    },
+                    crate::macros::MacroCommand {
+                        text: "AT+CWJAP".to_string(),
+                        delay_ms: 500,
+                    },
+                ],
+            })
+            .unwrap();
 
         app.execute_macro("wifi");
 
@@ -1590,14 +790,16 @@ mod tests {
         handle_key_event(&mut app, key(KeyCode::Enter));
         assert_eq!(app.mode, Mode::Normal);
 
-        app.macros.save_macro(crate::macros::Macro {
-            name: "reset".to_string(),
-            description: "Reset".to_string(),
-            commands: vec![crate::macros::MacroCommand {
-                text: "AT+RST".to_string(),
-                delay_ms: 0,
-            }],
-        });
+        app.macros
+            .save_macro(crate::macros::Macro {
+                name: "reset".to_string(),
+                description: "Reset".to_string(),
+                commands: vec![crate::macros::MacroCommand {
+                    text: "AT+RST".to_string(),
+                    delay_ms: 0,
+                }],
+            })
+            .unwrap();
         app.open_macro_selector();
         handle_key_event(&mut app, key(KeyCode::Enter));
         assert_eq!(app.mode, Mode::Normal);
@@ -1660,6 +862,25 @@ mod tests {
         app.send_plain_text("JOIN", SendSource::Macro);
         assert_eq!(app.quicksend, before);
         assert_eq!(app.app_config.quicksend.recent, before);
+    }
+
+    #[test]
+    fn test_unicode_input_editing_uses_character_cursor() {
+        let mut app = test_app_with_config(AppConfig::default());
+
+        app.input_char('é');
+        app.input_char('界');
+        assert_eq!(app.input_text, "é界");
+        assert_eq!(app.input_cursor, 2);
+
+        app.input_cursor_left();
+        app.input_delete();
+        assert_eq!(app.input_text, "é");
+        assert_eq!(app.input_cursor, 1);
+
+        app.input_backspace();
+        assert_eq!(app.input_text, "");
+        assert_eq!(app.input_cursor, 0);
     }
 
     #[test]
@@ -1790,6 +1011,18 @@ mod tests {
     }
 
     #[test]
+    fn test_write_error_uses_connection_loss_path() {
+        let mut app = test_app_with_config(AppConfig::default());
+        app.auto_reconnect = true;
+        app.connection_state = ConnectionState::Connected("/dev/ttyUSB0".to_string());
+
+        app.handle_write_error("broken pipe".to_string());
+
+        assert!(app.is_reconnecting());
+        assert_eq!(app.reconnect_port.as_deref(), Some("/dev/ttyUSB0"));
+    }
+
+    #[test]
     fn test_rerun_last_macro_and_reload_macros() {
         let macros_path = unique_temp_path("macros.toml");
         fs::write(
@@ -1811,7 +1044,7 @@ mod tests {
         let logger =
             SessionLogger::from_config(&config.logging.log_directory, &config.logging.log_format);
         let mut macros = MacroManager::with_path(Some(macros_path.clone()));
-        macros.reload();
+        macros.reload().unwrap();
         let mut app = App::build(
             SerialConfig::default(),
             "\r\n".to_string(),

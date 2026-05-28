@@ -12,17 +12,18 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
     }
 
     // Clear buffer (works in Normal and Input modes)
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('l') {
-        if matches!(app.mode, Mode::Normal | Mode::Input) {
-            app.clear_buffer();
-            return;
-        }
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char('l')
+        && matches!(app.mode, Mode::Normal | Mode::Input)
+    {
+        app.clear_buffer();
+        return;
     }
 
     // F-key quick-send (works in Normal and Input modes)
     if matches!(app.mode, Mode::Normal | Mode::Input) {
         match key.code {
-            KeyCode::F(n) if n >= 1 && n <= 8 => {
+            KeyCode::F(n) if (1..=8).contains(&n) => {
                 app.send_quicksend((n - 1) as usize);
                 return;
             }
@@ -136,11 +137,8 @@ fn handle_input_mode(app: &mut App, key: KeyEvent) {
                 app.input_cursor_right();
             }
         }
-        KeyCode::Tab => {
-            // Accept ghost suggestion
-            if app.ghost_suggestion.is_some() {
-                app.accept_suggestion();
-            }
+        KeyCode::Tab if app.ghost_suggestion.is_some() => {
+            app.accept_suggestion();
         }
         KeyCode::Up => {
             app.history_previous();
@@ -228,15 +226,13 @@ fn handle_port_select_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => {
             app.connect_selected_port();
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.port_select_index > 0 {
-                app.port_select_index -= 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if app.port_select_index > 0 => {
+            app.port_select_index -= 1;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.port_select_index + 1 < app.available_ports.len() {
-                app.port_select_index += 1;
-            }
+        KeyCode::Down | KeyCode::Char('j')
+            if app.port_select_index + 1 < app.available_ports.len() =>
+        {
+            app.port_select_index += 1;
         }
         // Refresh port list
         KeyCode::Char('r') => {
@@ -275,15 +271,11 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => {
             app.apply_settings();
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.settings_field > 0 {
-                app.settings_field -= 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if app.settings_field > 0 => {
+            app.settings_field -= 1;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.settings_field < 5 {
-                app.settings_field += 1;
-            }
+        KeyCode::Down | KeyCode::Char('j') if app.settings_field < 5 => {
+            app.settings_field += 1;
         }
         KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => {
             app.settings_next_value();
@@ -307,10 +299,8 @@ fn handle_macro_select_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('r') => {
             app.reload_macros();
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.macro_select_index > 0 {
-                app.macro_select_index -= 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if app.macro_select_index > 0 => {
+            app.macro_select_index -= 1;
         }
         KeyCode::Down | KeyCode::Char('j') => {
             let count = app.macros.list().len();
@@ -348,10 +338,8 @@ fn handle_filter_mode(app: &mut App, key: KeyEvent) {
                 app.remove_filter(app.filter_select_index);
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.filter_select_index > 0 {
-                app.filter_select_index -= 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if app.filter_select_index > 0 => {
+            app.filter_select_index -= 1;
         }
         KeyCode::Down | KeyCode::Char('j') => {
             let count = app.filter.count();

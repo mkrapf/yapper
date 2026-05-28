@@ -4,20 +4,11 @@ use crate::app::{App, Mode};
 
 /// Regions of the UI for click detection.
 /// These are set during rendering and read during mouse handling.
+#[derive(Default)]
 pub struct LayoutRegions {
     pub status_bar: (u16, u16, u16, u16), // x, y, w, h
     pub terminal_view: (u16, u16, u16, u16),
     pub input_bar: (u16, u16, u16, u16),
-}
-
-impl Default for LayoutRegions {
-    fn default() -> Self {
-        Self {
-            status_bar: (0, 0, 0, 0),
-            terminal_view: (0, 0, 0, 0),
-            input_bar: (0, 0, 0, 0),
-        }
-    }
 }
 
 /// Text selection state for click-drag-copy.
@@ -142,11 +133,9 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
         }
 
         // ── Release (copy selection) ────────────────────
-        MouseEventKind::Up(MouseButton::Left) => {
-            if app.selection.is_selecting {
-                copy_selection(app);
-                // Keep selection visible briefly
-            }
+        MouseEventKind::Up(MouseButton::Left) if app.selection.is_selecting => {
+            copy_selection(app);
+            // Keep selection visible briefly
         }
 
         _ => {}
@@ -177,10 +166,9 @@ fn handle_click(app: &mut App, col: u16, row: u16) {
         if app.mode != Mode::Input {
             app.mode = Mode::Input;
         }
-        // Position cursor roughly
-        let prompt_len = 4; // "> > " prefix
-        let click_pos = (col as usize).saturating_sub(ix as usize + prompt_len);
-        app.input_cursor = click_pos.min(app.input_text.len());
+        let prompt_width = if app.hex_input_mode { 6 } else { 3 };
+        let click_width = (col as usize).saturating_sub(ix as usize + prompt_width);
+        app.input_cursor = crate::display::char_index_for_width(&app.input_text, click_width);
         return;
     }
 
@@ -225,7 +213,7 @@ fn handle_settings_click(app: &mut App, row: u16) {
     if row >= field_start {
         let relative = (row - field_start) as usize;
         // Fields are at relative positions 0, 2, 4, 6, 8 (with blank lines between)
-        if relative % 2 == 0 {
+        if relative & 1 == 0 {
             let field_index = relative / 2;
             if field_index < 6 {
                 app.settings_field = field_index;
@@ -323,7 +311,7 @@ fn copy_selection(app: &mut App) {
     }
 
     if !selected_text.is_empty() {
-        match cli_clipboard::set_contents(selected_text) {
+        match crate::clipboard::set_text(selected_text) {
             Ok(_) => {
                 let lines = end_row - start_row + 1;
                 app.set_status_pub(format!("Copied {} line(s)", lines));
@@ -408,7 +396,7 @@ fn copy_hex_selection(app: &mut App, start_row: u16, end_row: u16, ty: u16, th: 
     }
 
     if !selected_text.is_empty() {
-        match cli_clipboard::set_contents(selected_text) {
+        match crate::clipboard::set_text(selected_text) {
             Ok(_) => {
                 let lines = end_row - start_row + 1;
                 app.set_status_pub(format!("Copied {} hex line(s)", lines));
@@ -417,5 +405,26 @@ fn copy_hex_selection(app: &mut App, start_row: u16, end_row: u16, ty: u16, th: 
                 app.set_status_pub("Clipboard unavailable".to_string());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::buffer::LineEnding;
+
+    #[test]
+    fn test_format_entry_for_copy_preserves_unicode_text() {
+        let text = format_entry_for_copy(
+            "rx é界",
+            chrono::Local::now(),
+            &LineEnding::Lf,
+            false,
+            false,
+            "%H:%M:%S",
+            true,
+        );
+
+        assert_eq!(text, "rx é界 ⏎");
     }
 }
