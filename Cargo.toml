@@ -23,3 +23,7 @@ unicode-width = "0.2"
 anyhow = "1"
 regex = "1"
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+
+[dev-dependencies]
+portable-pty = "0.9"
+vt100 = "0.15"

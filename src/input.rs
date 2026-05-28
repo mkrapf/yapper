@@ -236,8 +236,7 @@ fn handle_port_select_mode(app: &mut App, key: KeyEvent) {
         }
         // Refresh port list
         KeyCode::Char('r') => {
-            app.available_ports = crate::serial::detector::available_ports();
-            app.port_select_index = 0;
+            app.refresh_ports();
         }
         // Auto-detect baud rate
         KeyCode::Char('a') => {

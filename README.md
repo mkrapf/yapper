@@ -37,11 +37,24 @@ yapper /dev/ttyUSB0 115200
 
 # Full configuration
 yapper /dev/ttyACM0 9600 --data-bits 8 --parity none --stop-bits 1
+
+# Developer simulation mode
+yapper --simulate at-modem
 ```
 
 ### WSL
 
 Works with `cargo.exe run` from WSL — connects to Windows COM ports directly.
+
+## Simulation mode
+
+`--simulate at-modem` runs the normal TUI against a built-in virtual AT-style
+device exposed as `sim://at-modem`. It is intended for autonomous development,
+manual demos, and regression tests without serial hardware.
+
+The simulator responds case-insensitively to commands such as `AT`, `AT+GMR`,
+`AT+RST`, `AT+CWMODE=1`, `AT+CWJAP="SSID","PASS"`, `AT+CWQAP`, plus developer
+fault commands `AT+SIMDISCONNECT` and `AT+SIMERROR`.
 
 ## Keybindings
 

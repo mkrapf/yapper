@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::buffer::ScrollbackBuffer;
@@ -11,8 +12,9 @@ use crate::macros::MacroManager;
 use crate::mouse::{LayoutRegions, TextSelection};
 use crate::search::Search;
 use crate::serial::config::SerialConfig;
-use crate::serial::connection::{SerialConnection, SerialEvent};
+use crate::serial::connection::SerialEvent;
 use crate::serial::detector::PortInfo;
+use crate::transport::{RealTransport, Transport, TransportConnection};
 
 mod connection_flow;
 mod filters;
@@ -101,7 +103,9 @@ pub struct App {
     /// Current connection state.
     pub connection_state: ConnectionState,
     /// Active serial connection (if connected).
-    connection: Option<SerialConnection>,
+    connection: Option<Box<dyn TransportConnection>>,
+    /// Runtime used to list ports and open serial-like connections.
+    transport: Arc<dyn Transport>,
     /// Receiver for serial events from the reader thread.
     serial_rx: Option<Receiver<SerialEvent>>,
     /// Sender end — kept to pass to new connections.
@@ -198,6 +202,20 @@ pub struct App {
 
 impl App {
     pub fn new(serial_config: SerialConfig, line_ending: String, app_config: AppConfig) -> Self {
+        Self::new_with_transport(
+            serial_config,
+            line_ending,
+            app_config,
+            Arc::new(RealTransport::new()),
+        )
+    }
+
+    pub fn new_with_transport(
+        serial_config: SerialConfig,
+        line_ending: String,
+        app_config: AppConfig,
+        transport: Arc<dyn Transport>,
+    ) -> Self {
         let mut history =
             CommandHistory::from_config(app_config.history.max_entries, &app_config.history.file);
         let history_warning = history.take_last_error();
@@ -216,6 +234,7 @@ impl App {
             logger,
             macros,
             quicksend,
+            transport,
         );
         if let Some(warning) = history_warning {
             app.add_status_warning(format!("History warning: {}", warning));
@@ -234,6 +253,7 @@ impl App {
         logger: SessionLogger,
         macros: MacroManager,
         quicksend: Vec<String>,
+        transport: Arc<dyn Transport>,
     ) -> Self {
         let mut app_config = app_config;
         app_config.quicksend.recent = quicksend.clone();
@@ -248,6 +268,7 @@ impl App {
             serial_config,
             connection_state: ConnectionState::Disconnected,
             connection: None,
+            transport,
             serial_rx: None,
             serial_tx: None,
             scroll_offset: 0,
@@ -431,10 +452,10 @@ impl App {
                     if self.show_sent {
                         self.buffer.push_sent_line(format!("HEX: {}", text));
                     }
-                    if let Some(conn) = &self.connection {
+                    if let Some(conn) = self.connection.as_mut() {
                         match conn.write(&bytes) {
-                            Ok(_) => {
-                                self.tx_bytes = conn.tx_bytes();
+                            Ok(written) => {
+                                self.tx_bytes += written as u64;
                                 self.last_command_sent = Some(Instant::now());
                             }
                             Err(err) => self.handle_write_error(err.to_string()),
@@ -471,10 +492,10 @@ impl App {
             self.buffer.push_sent_line(text.to_string());
         }
 
-        if let Some(conn) = &self.connection {
+        if let Some(conn) = self.connection.as_mut() {
             match conn.write(data.as_bytes()) {
-                Ok(_) => {
-                    self.tx_bytes = conn.tx_bytes();
+                Ok(written) => {
+                    self.tx_bytes += written as u64;
                     self.last_command_sent = Some(Instant::now());
                 }
                 Err(err) => self.handle_write_error(err.to_string()),
@@ -608,6 +629,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -647,6 +669,7 @@ mod tests {
             logger,
             macros,
             quicksend,
+            Arc::new(RealTransport::new()),
         )
     }
 
@@ -1053,6 +1076,7 @@ mod tests {
             logger,
             macros,
             quicksend,
+            Arc::new(RealTransport::new()),
         );
 
         app.execute_macro("reset");

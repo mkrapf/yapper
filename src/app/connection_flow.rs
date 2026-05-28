@@ -2,8 +2,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use super::{App, ConnectionState, Mode, MAX_RECONNECT_DELAY};
-use crate::serial::connection::{SerialConnection, SerialEvent};
-use crate::serial::detector;
+use crate::serial::connection::SerialEvent;
 
 impl App {
     pub(super) fn reset_reconnect_state(&mut self) {
@@ -62,7 +61,10 @@ impl App {
 
         let (tx, rx) = mpsc::channel();
 
-        match SerialConnection::open(port_name, &self.serial_config, tx.clone()) {
+        match self
+            .transport
+            .open(port_name, &self.serial_config, tx.clone())
+        {
             Ok(conn) => {
                 self.connection_state = ConnectionState::Connected(port_name.to_string());
                 self.connection = Some(conn);
@@ -81,8 +83,6 @@ impl App {
 
     fn disconnect_internal(&mut self, keep_reconnect: bool) {
         if let Some(conn) = self.connection.take() {
-            self.rx_bytes += conn.rx_bytes;
-            self.tx_bytes += conn.tx_bytes();
             conn.close();
         }
         self.serial_rx = None;
@@ -189,7 +189,7 @@ impl App {
         let mut changed = false;
 
         if let Some((_, time)) = &self.status_message {
-            if time.elapsed() > Duration::from_secs(3) {
+            if now.saturating_duration_since(*time) > Duration::from_secs(3) {
                 self.status_message = None;
                 changed = true;
             }
@@ -197,6 +197,12 @@ impl App {
 
         if self.try_reconnect(now) {
             changed = true;
+        }
+
+        if let Some(conn) = self.connection.as_mut() {
+            if conn.tick(now) {
+                changed = true;
+            }
         }
 
         if self.drain_macro_queue(now) {
@@ -225,7 +231,7 @@ impl App {
         }
 
         let (tx, rx) = mpsc::channel();
-        match SerialConnection::open(&port, &self.serial_config, tx.clone()) {
+        match self.transport.open(&port, &self.serial_config, tx.clone()) {
             Ok(conn) => {
                 self.reset_reconnect_state();
                 self.connection_state = ConnectionState::Connected(port.clone());
@@ -250,7 +256,7 @@ impl App {
 
     pub fn auto_detect_baud(&mut self, port_name: &str) {
         self.set_status("Auto-detecting baud rate...".to_string());
-        match crate::serial::auto_detect::auto_detect_baud(port_name) {
+        match self.transport.auto_detect_baud(port_name) {
             Some(rate) => {
                 self.apply_detected_baud(port_name, rate);
                 self.set_status(format!("Detected baud rate: {}", rate));
@@ -266,9 +272,13 @@ impl App {
         self.save_port_profile(port_name);
     }
 
-    pub fn open_port_selector(&mut self) {
-        self.available_ports = detector::available_ports();
+    pub fn refresh_ports(&mut self) {
+        self.available_ports = self.transport.available_ports();
         self.port_select_index = 0;
+    }
+
+    pub fn open_port_selector(&mut self) {
+        self.refresh_ports();
         self.open_overlay(Mode::PortSelect);
     }
 

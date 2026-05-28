@@ -1,24 +1,3 @@
-#![allow(dead_code)]
-
-mod app;
-mod buffer;
-mod clipboard;
-mod config;
-mod display;
-mod event;
-mod filter;
-mod hex;
-mod highlight;
-mod history;
-mod input;
-mod logging;
-mod macros;
-mod mouse;
-mod search;
-mod serial;
-mod theme;
-mod ui;
-
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
@@ -28,9 +7,13 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use std::io;
+use std::sync::Arc;
 
-use app::{App, Mode};
-use event::EventLoop;
+use yapper::app::{App, Mode};
+use yapper::config;
+use yapper::event::EventLoop;
+use yapper::sim::{SimProfile, SimTransport};
+use yapper::transport::{RealTransport, Transport};
 
 /// yapper — A modern UART serial TUI terminal for embedded workflows
 #[derive(Parser, Debug)]
@@ -67,13 +50,22 @@ struct Cli {
     /// Skip auto-connecting to the last used port
     #[arg(long)]
     no_auto: bool,
+
+    /// Run against a built-in simulated device profile (default: at-modem)
+    #[arg(long, value_name = "PROFILE", default_missing_value = "at-modem", num_args = 0..=1)]
+    simulate: Option<String>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let config_load = config::AppConfig::load_with_diagnostics();
     let app_config = config_load.config;
-    let startup_port = resolve_startup_port(&cli, &app_config);
+    let sim_profile = resolve_sim_profile(&cli)?;
+    let transport: Arc<dyn Transport> = match sim_profile {
+        Some(profile) => Arc::new(SimTransport::new(profile)),
+        None => Arc::new(RealTransport::new()),
+    };
+    let startup_port = resolve_startup_port(&cli, &app_config, sim_profile);
 
     // Setup terminal
     enable_raw_mode()?;
@@ -93,7 +85,12 @@ fn main() -> Result<()> {
     let serial_config = effective_defaults.to_serial_config();
     let line_ending = effective_defaults.to_line_ending();
 
-    let mut app = App::new(serial_config, line_ending.to_string(), app_config.clone());
+    let mut app = App::new_with_transport(
+        serial_config,
+        line_ending.to_string(),
+        app_config.clone(),
+        transport,
+    );
     if let Some(warning) = config_load.warning {
         app.add_status_warning(warning);
     }
@@ -124,8 +121,25 @@ fn main() -> Result<()> {
     result
 }
 
-fn resolve_startup_port(cli: &Cli, app_config: &config::AppConfig) -> Option<String> {
+fn resolve_sim_profile(cli: &Cli) -> Result<Option<SimProfile>> {
+    let Some(profile) = cli.simulate.as_deref() else {
+        return Ok(None);
+    };
+
+    SimProfile::from_name(profile)
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!("Unknown simulation profile: {}", profile))
+}
+
+fn resolve_startup_port(
+    cli: &Cli,
+    app_config: &config::AppConfig,
+    sim_profile: Option<SimProfile>,
+) -> Option<String> {
     cli.port.clone().or_else(|| {
+        if let Some(profile) = sim_profile {
+            return Some(profile.port_name().to_string());
+        }
         if !cli.no_auto && app_config.connection.auto_connect {
             app_config.connection.last_port.clone()
         } else {
@@ -180,6 +194,7 @@ mod tests {
             flow_control: None,
             line_ending: None,
             no_auto: false,
+            simulate: None,
         }
     }
 
@@ -200,7 +215,7 @@ mod tests {
         );
 
         let cli = cli();
-        let startup_port = resolve_startup_port(&cli, &config);
+        let startup_port = resolve_startup_port(&cli, &config, None);
         let resolved = resolve_effective_defaults(&cli, &config, startup_port.as_deref());
 
         assert_eq!(startup_port.as_deref(), Some("/dev/ttyUSB0"));
@@ -229,12 +244,22 @@ mod tests {
         cli.parity = Some("none".to_string());
         cli.line_ending = Some("crlf".to_string());
 
-        let startup_port = resolve_startup_port(&cli, &config);
+        let startup_port = resolve_startup_port(&cli, &config, None);
         let resolved = resolve_effective_defaults(&cli, &config, startup_port.as_deref());
 
         assert_eq!(resolved.baud_rate, 230400);
         assert_eq!(resolved.parity, "none");
         assert_eq!(resolved.data_bits, 7);
         assert_eq!(resolved.line_ending, "crlf");
+    }
+
+    #[test]
+    fn test_resolve_startup_port_uses_simulation_port() {
+        let config = config::AppConfig::default();
+        let cli = cli();
+
+        let startup_port = resolve_startup_port(&cli, &config, Some(SimProfile::AtModem));
+
+        assert_eq!(startup_port.as_deref(), Some("sim://at-modem"));
     }
 }
